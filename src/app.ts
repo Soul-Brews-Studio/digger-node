@@ -20,6 +20,7 @@ import { handleMcp, resolveTermRefs, TOOLS } from "./mcp";
 import { page } from "./page";
 import { readStored } from "./passphrase";
 import { loginPage } from "./screens";
+import { ingressBase } from "./utils";
 import type { Embedder } from "./embed";
 import type { Store } from "./store/types";
 
@@ -395,13 +396,16 @@ export function createApp({
        * nothing about the corpus is in it.
        */
       .get("/", async ({ request }) => {
+        // Home Assistant ingress serves this app under a path prefix; every
+        // URL the page emits has to carry it. "" for a direct deploy.
+        const base = ingressBase(request);
         const key = (auth.ownerPassphrase ?? "") + "\u0000" + ((await readStored(store)) ?? "");
         if (guarded && !(await authenticate(store, request, auth, undefined, key)).ok) {
-          return new Response(loginPage({ instanceName }), {
+          return new Response(loginPage({ instanceName, base }), {
             headers: { "content-type": "text/html; charset=utf-8" },
           });
         }
-        return new Response(page(instanceName), {
+        return new Response(page(instanceName, base), {
           headers: { "content-type": "text/html; charset=utf-8" },
         });
       })

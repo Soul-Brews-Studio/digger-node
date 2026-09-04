@@ -23,12 +23,21 @@ import template from "./page.html" with { type: "text" };
 /**
  * Substituted rather than templated.
  *
- * The instance name is the only server-side value the page needs, and a single
- * marker keeps page.html a file that opens correctly in a browser and an editor.
- * Escaped because an instance name is operator-supplied.
+ * Two server-side values, and a single marker each keeps page.html a file that
+ * opens correctly in a browser and an editor. Both are escaped because both are
+ * operator- or proxy-supplied.
+ *
+ * `base` is the URL prefix the page is being served under, empty for a normal
+ * deploy. It exists for Home Assistant ingress, which serves an add-on at
+ * `/api/hassio_ingress/<token>/` — so a client that fetches `/api/nodes`
+ * reaches Home Assistant rather than this app, and every request 404s while the
+ * page itself loads fine. See `ingressBase()` in utils.ts for why the prefix
+ * cannot be derived on the client and must not be treated as authorization.
  */
-export function page(instance: string): string {
-  return (template as unknown as string).replaceAll("__INSTANCE__", escapeHtml(instance));
+export function page(instance: string, base = ""): string {
+  return (template as unknown as string)
+    .replaceAll("__INSTANCE__", escapeHtml(instance))
+    .replaceAll("__BASE__", escapeHtml(base));
 }
 
 function escapeHtml(input: string): string {

@@ -116,8 +116,15 @@ const html = htm.bind(createElement);
 const NL = "\n";
 
 // ── plumbing ─────────────────────────────────────────────────────────────────
+// Substituted by the server. Empty on a normal deploy; under Home Assistant
+// ingress it is "/api/hassio_ingress/<token>", and every request below has to
+// carry it or it resolves against Home Assistant instead of this app.
+//
+// It is prefixed here, in ONE place, rather than at ~20 call sites — the call
+// sites keep reading as the routes they are.
+const BASE = "__BASE__";
 const j = async (url, opts) => {
-  const response = await fetch(url, opts);
+  const response = await fetch(BASE + url, opts);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.message || body?.error || ("HTTP " + response.status));
   return body;
@@ -421,7 +428,7 @@ function App() {
   };
 
   const lock = async () => {
-    await fetch("/logout", { method: "POST" }).catch(() => {});
+    await fetch(BASE + "/logout", { method: "POST" }).catch(() => {});
     location.reload();
   };
 

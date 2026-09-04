@@ -82,6 +82,8 @@ export function approvalPage(input: {
   clientName: string;
   params: Record<string, string>;
   error?: string;
+  /** Ingress prefix, "" for a direct deploy — see ingressBase() in utils.ts. */
+  base?: string;
 }): string {
   const hidden = Object.entries(input.params)
     .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
@@ -89,7 +91,7 @@ export function approvalPage(input: {
 
   return shell(
     "Authorize · digger-node",
-    `<form method="post" action="/authorize">
+    `<form method="post" action="${escapeHtml(input.base ?? "")}/authorize">
   <h1>Connect <span class="strong">${escapeHtml(input.clientName)}</span></h1>
   <p>It is asking to read and write this corpus.</p>
   ${input.error ? `<div class="err">${escapeHtml(input.error)}</div>` : ""}
@@ -103,10 +105,16 @@ export function approvalPage(input: {
 }
 
 /** The lock screen for the web page. Same passphrase, different destination. */
-export function loginPage(input: { instanceName: string; error?: string; next?: string }): string {
+export function loginPage(input: {
+  instanceName: string;
+  error?: string;
+  next?: string;
+  /** Ingress prefix, "" for a direct deploy — see ingressBase() in utils.ts. */
+  base?: string;
+}): string {
   return shell(
     `Sign in · ${input.instanceName}`,
-    `<form method="post" action="/login">
+    `<form method="post" action="${escapeHtml(input.base ?? "")}/login">
   <h1>${escapeHtml(input.instanceName)}</h1>
   <p>This corpus is private. Enter the owner passphrase.</p>
   ${input.error ? `<div class="err">${escapeHtml(input.error)}</div>` : ""}

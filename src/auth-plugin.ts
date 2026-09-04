@@ -34,7 +34,7 @@ import { clientIp, recordFailure, recordSuccess, retryAfter, tooManyAttempts } f
 import { approvalPage, loginPage } from "./screens";
 import { clearedSessionCookie, issueSession, sessionCookie } from "./session";
 import type { Store } from "./store/types";
-import { timingSafeEqual } from "./utils";
+import { ingressBase, timingSafeEqual } from "./utils";
 
 export interface AuthPluginOptions {
   store: Store;
@@ -248,6 +248,7 @@ export function authPlugin({
 
         return new Response(
           approvalPage({
+            base: ingressBase(request),
             clientName: client.clientName ?? client.clientId,
             params: {
               client_id: clientId,
@@ -297,6 +298,7 @@ export function authPlugin({
           return tooManyAttempts(
             held,
             approvalPage({
+              base: ingressBase(request),
               clientName: client.clientName ?? client.clientId,
               error: `Too many failed attempts. Try again in ${held}s.`,
               params,
@@ -308,6 +310,7 @@ export function authPlugin({
           if (throttled) await recordFailure(store, "authorize", ip);
           return new Response(
             approvalPage({
+              base: ingressBase(request),
               clientName: client.clientName ?? client.clientId,
               error: "That passphrase does not match. Try again.",
               params,
@@ -379,10 +382,13 @@ export function authPlugin({
       })
 
       // ── the browser's session ──────────────────────────────────────────────
-      .get("/login", ({ query }) => {
-        if (!guarded) return new Response(null, { status: 302, headers: { location: "/" } });
+      .get("/login", ({ query, request }) => {
+        const base = ingressBase(request);
+        // A bare "/" here would leave the ingress iframe and land on Home
+        // Assistant's own dashboard, which looks like the add-on crashed.
+        if (!guarded) return new Response(null, { status: 302, headers: { location: `${base}/` } });
         return new Response(
-          loginPage({ instanceName, next: query.next ? String(query.next) : undefined }),
+          loginPage({ instanceName, base, next: query.next ? String(query.next) : undefined }),
           { headers: { "content-type": "text/html; charset=utf-8" } },
         );
       })
@@ -396,7 +402,7 @@ export function authPlugin({
         if (held > 0) {
           return tooManyAttempts(
             held,
-            loginPage({ instanceName, error: `Too many failed attempts. Try again in ${held}s.` }),
+            loginPage({ instanceName, base: ingressBase(request), error: `Too many failed attempts. Try again in ${held}s.` }),
           );
         }
 
@@ -405,7 +411,7 @@ export function authPlugin({
           !(await checkOwner(store, String(form.passphrase ?? ""), auth.ownerPassphrase))
         ) {
           if (throttled) await recordFailure(store, "login", ip);
-          return new Response(loginPage({ instanceName, error: "That passphrase does not match." }), {
+          return new Response(loginPage({ instanceName, base: ingressBase(request), error: "That passphrase does not match." }), {
             status: 401,
             headers: { "content-type": "text/html; charset=utf-8" },
           });

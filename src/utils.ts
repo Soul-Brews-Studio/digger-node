@@ -126,6 +126,37 @@ export function readCookie(header: string | null | undefined, name: string): str
   return null;
 }
 
+/**
+ * The URL prefix this request arrived under, or "" for a direct deploy.
+ *
+ * Home Assistant's ingress serves an add-on at `/api/hassio_ingress/<token>/`
+ * and passes that prefix in `X-Ingress-Path`. Server-rendered links and the
+ * client's own fetches have to carry it, or they resolve against Home Assistant
+ * instead of this app — the page loads and every request under it 404s, which
+ * reads as "the add-on is broken" rather than "the URLs are wrong".
+ *
+ * Two things this deliberately does NOT do:
+ *
+ * 1. It does not try to STRIP the prefix from the path. The prefix *is*
+ *    `/api/hassio_ingress/<token>`, so a regex anchored on `/api` matches at
+ *    position 0 and removes the wrong thing. Ingress already delivers the
+ *    unprefixed path; only outbound URLs need the prefix added back.
+ *
+ * 2. It is never used as authorization. Every add-on on a Home Assistant host
+ *    shares the `172.30.32.0/23` bridge, so anything co-resident can set this
+ *    header — it is a claim from an unauthenticated party. Trusting it to mean
+ *    "Home Assistant already checked the session" is the exact bug the fleet
+ *    shipped and fixed once. It decides URL shape and nothing else, so a forged
+ *    value can only make the forger's own links wrong.
+ */
+export function ingressBase(request: Request): string {
+  const raw = request.headers.get("x-ingress-path") ?? "";
+  // Only a rooted, single-line path. Anything else is discarded rather than
+  // interpolated into the page.
+  if (!/^\/[\w\-./]*$/.test(raw)) return "";
+  return raw.replace(/\/+$/, "");
+}
+
 /** 'vocabulary:term' → parts. A bare name lands in the default vocabulary. */
 export function parseTermRef(raw: string, defaultVocabulary = "tags"): { vocabulary: string; name: string } | null {
   const value = String(raw ?? "").trim();
