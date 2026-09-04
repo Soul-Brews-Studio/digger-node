@@ -32,7 +32,30 @@ import { SETTINGS } from "./sql";
 import type { Store } from "./store/types";
 import { base64UrlEncode, nowIso, timingSafeEqual } from "./utils";
 
-const ITERATIONS = 210_000;
+/**
+ * 100,000 — and this number is a RUNTIME CEILING, not a security preference.
+ *
+ * OWASP's 2023 floor for PBKDF2-HMAC-SHA256 is 210,000, which is what this was
+ * set to. bun accepts it, every test passed, and production answered:
+ *
+ *   Pbkdf2 failed: iteration counts above 100000 are not supported (requested 210000)
+ *
+ * workerd caps `deriveBits` at 100,000. So the tests could not have caught it —
+ * this is the same shape as the `aot: false` bug in app.ts: correct code, green
+ * suite, and a failure that exists only on the runtime that actually serves
+ * users. The only thing that finds it is running it there.
+ *
+ * What the lower count costs, stated rather than glossed: half the work per
+ * guess for an attacker with the database. The mitigation is that this hash is
+ * not the only defence — /login and /authorize are rate limited to five attempts
+ * then exponential backoff, so an online attack never reaches the hash's margin,
+ * and an offline attack means the database already leaked.
+ *
+ * The stored format carries its own iteration count, so raising this the day
+ * workerd does costs nothing: old hashes keep verifying at the count they were
+ * written with.
+ */
+const ITERATIONS = 100_000;
 const KEY = "owner_passphrase";
 
 /** Minimum length. Short enough to remember, long enough that the rate limiter's
