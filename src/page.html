@@ -244,6 +244,9 @@ function App() {
   const [setMsg, setSetMsg] = useState(null);
 
   const selected = useMemo(() => new Set(route.terms || []), [route.terms]);
+  // Settings is configuration, not a third view of the corpus — so it is a route
+  // of its own rather than a third segment in the content/timeline toggle.
+  const settingsOpen = route.kind === "settings";
 
   useEffect(() => {
     const onHash = () => setRoute(readRoute());
@@ -272,6 +275,7 @@ function App() {
   const loadNodes = useCallback(async () => {
     setNodes(null);
     try {
+      if (route.kind === "settings") { setHeading("Content"); return setNodes([]); }
       if (route.kind === "untagged") {
         const d = await j("/api/nodes?untagged=1");
         setHeading("Untagged · " + d.count + " waiting to be classified");
@@ -476,12 +480,18 @@ function App() {
             <option value="hybrid">hybrid</option>
           </select>
         </form>
+        ${!settingsOpen && html`
         <nav class="flex items-center gap-1 rounded-lg border border-line p-0.5">
-          ${["content", "timeline", "settings"].map((v) => html`
+          ${["content", "timeline"].map((v) => html`
             <button key=${v} type="button" onClick=${() => setView(v)}
               class=${"rounded-md px-2.5 py-1 text-[12px] transition " +
                 (view === v ? "bg-chip text-ember" : "text-dim hover:text-ink")}>${v}</button>`)}
-        </nav>
+        </nav>`}
+        <a href=${settingsOpen ? "#/" : "#/settings"}
+           class=${"rounded-lg border px-2.5 py-1 text-[12px] no-underline transition " +
+             (settingsOpen ? "border-ember/60 text-ember" : "border-line text-dim hover:border-ember/60 hover:text-ember")}>
+          ${settingsOpen ? "done" : "settings"}
+        </a>
         ${health && health.auth !== "none" && html`
           <button type="button" onClick=${lock} title="Sign out of this browser"
                   class="rounded-lg border border-line px-2.5 py-1 text-[12px] text-dim transition
@@ -496,7 +506,9 @@ function App() {
           </span>`}
       </header>
 
-      <div class="mx-auto grid max-w-[1240px] items-start gap-6 px-6 py-6 lg:grid-cols-[320px_1fr]">
+      <div class=${"mx-auto grid max-w-[1240px] items-start gap-6 px-6 py-6 " +
+                   (settingsOpen ? "max-w-[860px]" : "lg:grid-cols-[320px_1fr]")}>
+        ${!settingsOpen && html`
         <aside class="grid gap-5">
           <${Panel} title="Add content">
             <form class="grid gap-3" onSubmit=${onCreate}>
@@ -609,10 +621,10 @@ function App() {
                   </div>`)}
               </div>`}
           <//>
-        </aside>
+        </aside>`}
 
         <main class="grid gap-5">
-          ${view === "settings" ? html`
+          ${settingsOpen ? html`
             <${Panel} title="Content types">
               <p class="m-0 mb-3 max-w-[62ch] text-[12px] leading-5 text-dim">
                 ${types.policy === "controlled"
@@ -740,6 +752,7 @@ function App() {
 
           `}
 
+          ${!settingsOpen && html`
           <${Panel} title="MCP call log">
             ${!calls ? html`<${Empty}>…<//>`
               : calls.length === 0 ? html`<${Empty}>No MCP calls yet. Connect a client and it fills up.<//>`
@@ -762,7 +775,7 @@ function App() {
                     </tbody>
                   </table>
                 </div>`}
-          <//>
+          <//>`}
         </main>
       </div>
     <//>`;
