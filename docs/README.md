@@ -2,7 +2,8 @@
 
 Every screenshot here is a real running instance, captured from the browser
 against a live Worker with a real corpus and a real OAuth flow. Nothing is a
-mockup; the error messages are the ones the server actually produces.
+mockup; the error messages are the ones the server actually produces, and they
+are re-shot whenever the interface changes rather than left to drift.
 
 - **[Connecting claude.ai](connect-claude-ai.md)** — the OAuth flow, end to end.
 - Source and design notes: [`../README.md`](../README.md), [`../DESIGN.md`](../DESIGN.md).
@@ -109,6 +110,56 @@ session for free.
 
 ---
 
+## The corpus as a chronology
+
+![The timeline view](images/09-timeline.png)
+
+`content` and `timeline` are two views of the same corpus. The timeline
+interleaves **two kinds of event** — a node was written, a tool was called —
+ordered by event time.
+
+The merge happens in SQL rather than by zipping two lists in the client, and that
+is the whole reason it can be trusted: it makes `ORDER BY at DESC, rowid DESC`
+possible, and the client cannot see `rowid`. Wall-clock time is not unique at
+machine speed — this project has already had two same-millisecond rows order
+non-deterministically, caught by a test — so the insertion counter is the
+tiebreaker.
+
+That is not a hypothetical worry. A dig across this fleet's own stores found six
+different ordering keys for one kind of record and only one of them correct: some
+with empty timestamps, one with duplicate sequence numbers, one with no time
+field at all, and session transcripts whose records are **not** in time order
+despite being an append-only file. The page states its ordering rule under the
+list rather than leaving you to assume it.
+
+## Settings
+
+![The settings page](images/10-settings.png)
+
+Configuration is its own route (`#/settings`), not a third segment in the
+`content | timeline` toggle — those two are views of your data; this is not.
+
+- **Content types** — what a node may be, and a field to allow another. When a
+  controlled vocabulary is refusing an unknown type, the refusal in the create
+  form renders the button that grants it. The error used to say
+  `Add it with term_create{vocabulary:"type"}`, which is an MCP call a person
+  reading a web form cannot make.
+- **Vocabularies** — the kind of each, and delete. Deleting is the documented way
+  back to free text, and it reports what it would cost first: terms and tag
+  assignments both cascade, so "delete the vocabulary" silently means "delete
+  every tag anyone ever applied from it".
+- **Lock** — change the passphrase without a redeploy. It is stored in D1 as
+  PBKDF2, so the read-only Cloudflare secret is no longer the only key; that
+  secret keeps working as the recovery path, which is why forgetting the one you
+  set is not the same as losing the corpus.
+
+## On a phone
+
+![The layout on a 390px screen](images/11-mobile.png)
+
+One column, the compose box first. The health strip is hidden below `sm` — it is
+operator detail, and it was wrapping to two lines and pushing the app down.
+
 ## Screens index
 
 | Image | What it shows |
@@ -121,3 +172,6 @@ session for free.
 | [`06-search-thai.png`](images/06-search-thai.png) | Trigram FTS matching inside a Thai sentence |
 | [`07-tag-filter.png`](images/07-tag-filter.png) | Filtering by clicking a tag |
 | [`08-untagged.png`](images/08-untagged.png) | The untagged queue and the MCP call log |
+| [`09-timeline.png`](images/09-timeline.png) | Nodes and tool calls interleaved by event time |
+| [`10-settings.png`](images/10-settings.png) | Content types, vocabularies, and the lock |
+| [`11-mobile.png`](images/11-mobile.png) | The same page at 390px |
