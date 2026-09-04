@@ -1,0 +1,138 @@
+/**
+ * The small shared things. No database, no HTTP, no imports from the rest of
+ * the app — so anything here can be tested on its own and reused by a client.
+ */
+
+export const nowIso = (): string => new Date().toISOString();
+
+/** Epoch seconds. What every OAuth expiry is compared against. */
+export const nowSeconds = (): number => Math.floor(Date.now() / 1000);
+
+/**
+ * A readable, URL-safe id with the type baked into the prefix.
+ * Time first so ids sort roughly by creation even outside the database.
+ */
+export function newId(prefix: string): string {
+  const time = Date.now().toString(36);
+  const rand = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  return `${prefix}_${time}${rand}`;
+}
+
+/**
+ * A machine name: lowercase, dashes, nothing exotic.
+ * Thai codepoints are kept deliberately — a Thai vocabulary name should survive
+ * being slugified, and stripping them would silently produce an empty string.
+ */
+export function slugify(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9฀-๿]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
+
+/** Clamp a caller-supplied limit into a range the database is happy to serve. */
+export const clampLimit = (value: unknown, fallback: number, max: number): number => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(Math.trunc(n), 1), max);
+};
+
+export const clampOffset = (value: unknown): number => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+};
+
+/**
+ * Truncate for storage, with the original length preserved in the marker.
+ * Truncating at WRITE time is deliberate: a 100KB argument blob would otherwise
+ * live in the database forever and only be trimmed when someone reads it.
+ */
+export function clip(value: unknown, max: number): string {
+  const text = typeof value === "string" ? value : JSON.stringify(value ?? null);
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max)}…[${text.length} chars]` : text;
+}
+
+export function escapeHtml(input: string): string {
+  return String(input).replace(
+    /[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!,
+  );
+}
+
+/**
+ * Quote a search needle as an FTS5 phrase.
+ * Doubling embedded quotes is the escape FTS5 defines; without it a needle
+ * containing a quote is a syntax error, and one containing OR/NEAR is an
+ * operator the user did not ask for.
+ */
+export const ftsPhrase = (query: string): string => `"${query.replace(/"/g, '""')}"`;
+
+// ── credentials ──────────────────────────────────────────────────────────────
+//
+// Four small primitives, all on WebCrypto, which exists identically in workerd,
+// Bun and the browser. Nothing here imports Node's `crypto`: that would build
+// fine and then fail on the first request in the Worker.
+
+/** base64url, unpadded — the encoding OAuth and PKCE both specify. */
+export function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** A URL-safe random secret. 32 bytes is the floor for anything bearer-shaped. */
+export function randomToken(bytes = 32): string {
+  return base64UrlEncode(crypto.getRandomValues(new Uint8Array(bytes)));
+}
+
+/** RFC 7636 S256: the verifier's SHA-256, base64url, unpadded. */
+export async function sha256Base64Url(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+/**
+ * Constant-time string comparison, by comparing digests rather than characters.
+ *
+ * `a === b` on a secret leaks how much of it was right: the comparison exits at
+ * the first differing byte, and the timing difference is measurable across a
+ * network given enough samples. Hashing both sides first makes every comparison
+ * take the same time regardless of input, and the fixed-length loop below never
+ * short-circuits.
+ */
+export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const [digestA, digestB] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(a)),
+    crypto.subtle.digest("SHA-256", encoder.encode(b)),
+  ]);
+  const viewA = new Uint8Array(digestA);
+  const viewB = new Uint8Array(digestB);
+  let diff = 0;
+  for (let i = 0; i < viewA.length; i++) diff |= viewA[i] ^ viewB[i];
+  return diff === 0;
+}
+
+/** One cookie out of a Cookie header, or null. */
+export function readCookie(header: string | null | undefined, name: string): string | null {
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const [key, ...rest] = part.trim().split("=");
+    if (key === name) return rest.join("=") || null;
+  }
+  return null;
+}
+
+/** 'vocabulary:term' → parts. A bare name lands in the default vocabulary. */
+export function parseTermRef(raw: string, defaultVocabulary = "tags"): { vocabulary: string; name: string } | null {
+  const value = String(raw ?? "").trim();
+  if (!value) return null;
+  const idx = value.indexOf(":");
+  const vocabulary = idx > 0 ? value.slice(0, idx).trim() : defaultVocabulary;
+  const name = idx > 0 ? value.slice(idx + 1).trim() : value;
+  if (!name) return null;
+  return { vocabulary, name };
+}

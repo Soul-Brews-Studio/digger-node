@@ -1,0 +1,51 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "digger-node",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // Elysia reaches for a few Node built-ins on some paths; without this the
+  // Worker builds and then fails at runtime on the first request, which is the
+  // worst possible place to find out.
+  "compatibility_flags": ["nodejs_compat"],
+
+  // The deploy button reads this file to decide what to provision. A database
+  // with a placeholder id is the signal to create a fresh one and rewrite the
+  // id in the copy it makes for you — so this placeholder is load-bearing, not
+  // a leftover.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "digger-node",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // Workers AI powers semantic search. Optional at runtime: with the binding
+  // absent the Worker still serves text search and /health reports embedder:null.
+  "ai": {
+    "binding": "AI"
+  },
+
+  // Auth is OPT-IN and lives entirely in SECRETS, never here — this file is
+  // committed, and a `vars` entry would put the credential in git.
+  //
+  //   wrangler secret put OWNER_PASSPHRASE   OAuth (claude.ai) + web login
+  //   wrangler secret put API_TOKEN          static bearer (curl, MCP clients)
+  //
+  // With neither set the Worker is OPEN: anyone who can reach the URL can read
+  // and write, and /health says `"auth": "none"` on every call. That is the
+  // deliberate first-run state for a one-click deploy — a button that produces
+  // a Worker returning 401 to its own owner, with no screen on which to set a
+  // secret, is a broken install. Set at least one before putting anything real
+  // in it.
+  "vars": {
+    "INSTANCE_NAME": "digger-node"
+    // "PUBLIC_URL": "https://example.com"  — only behind a proxy that rewrites
+    // Host. The OAuth issuer must equal the origin the client reached, exactly.
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

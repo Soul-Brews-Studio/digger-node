@@ -1,0 +1,25 @@
+{
+  "name": "digger-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A Drupal-shaped content store — title, body, datetime, taxonomy — served to models over MCP from one Cloudflare Worker.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "seed": "bun run scripts/seed.ts"
+  },
+  "dependencies": {
+    "elysia": "^1.4.29"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "@types/bun": "^1.4.0",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.128.0"
+  }
+}
