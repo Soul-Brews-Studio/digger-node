@@ -255,6 +255,28 @@ export const OAUTH = {
   },
 } as const;
 
+/** Throttling for the two endpoints that take a human-chosen passphrase.
+ *  `last_at` is epoch SECONDS, like the OAuth expiries — only ever compared to
+ *  a clock. */
+export const RATE = {
+  // args: bucket, clientIp
+  get: `SELECT failures, last_at FROM auth_attempts WHERE bucket = ? AND client_ip = ?`,
+
+  /** One failure, resetting the count when the caller has been quiet for a
+   *  whole window. Resetting HERE rather than sweeping on a schedule means a
+   *  caller who returns an hour later starts clean with nothing having had to
+   *  run in between.  args: bucket, clientIp, now, windowStart, now */
+  fail: `INSERT INTO auth_attempts (bucket, client_ip, failures, last_at)
+         VALUES (?, ?, 1, ?)
+         ON CONFLICT(bucket, client_ip) DO UPDATE SET
+           failures = CASE WHEN auth_attempts.last_at < ? THEN 1 ELSE auth_attempts.failures + 1 END,
+           last_at  = ?`,
+
+  /** A correct passphrase clears the record — mistyping twice then succeeding
+   *  must not carry those failures forward.  args: bucket, clientIp */
+  clear: `DELETE FROM auth_attempts WHERE bucket = ? AND client_ip = ?`,
+} as const;
+
 // ── composable statements ────────────────────────────────────────────────────
 //
 // Two queries take a variable shape: listing nodes (filters + optional taxonomy

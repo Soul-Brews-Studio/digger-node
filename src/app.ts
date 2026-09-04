@@ -33,6 +33,8 @@ export interface AppOptions {
   /** Overrides the origin advertised in OAuth metadata. Only needed behind a
    *  proxy that rewrites Host — see oauth.ts on why this must be exact. */
   publicUrl?: string;
+  /** Throttle the passphrase endpoints. Defaults ON whenever auth is on. */
+  rateLimit?: boolean;
 }
 
 const SERVER_VERSION = "0.1.0";
@@ -62,8 +64,10 @@ export function createApp({
   embedder = null,
   auth = {},
   publicUrl,
+  rateLimit,
 }: AppOptions) {
   const guarded = authEnabled(auth);
+  const throttled = rateLimit ?? guarded;
   return (
     // aot: false is REQUIRED on Cloudflare Workers and is not a tuning knob.
     // Elysia's default ahead-of-time compiler builds handlers with `new
@@ -90,7 +94,7 @@ export function createApp({
        * Everything auth-shaped lives in auth-plugin.ts; nothing below this line
        * needs to know authentication exists.
        */
-      .use(authPlugin({ store, auth, publicUrl, instanceName }))
+      .use(authPlugin({ store, auth, publicUrl, instanceName, rateLimit }))
 
       /**
        * Errors answer as JSON, always.
@@ -159,6 +163,9 @@ export function createApp({
           // server where only the static token is configured would read as
           // "claude.ai can connect", which it could not.
           auth: guarded ? authModes(auth) : "none",
+          // Stated, not inferred: whether the passphrase endpoints have a
+          // guessing budget. No extra query — it is a resolved config value.
+          rate_limit: guarded ? throttled : null,
           tools: TOOLS.length,
           nodes,
           // Named, not implied: a caller can see whether semantic search is

@@ -29,6 +29,7 @@ import { Elysia } from "elysia";
 
 import { authenticate, authEnabled, unauthorized, type AuthConfig } from "./auth";
 import * as oauth from "./oauth";
+import { clientIp, recordFailure, recordSuccess, retryAfter, tooManyAttempts } from "./ratelimit";
 import { approvalPage, loginPage } from "./screens";
 import { clearedSessionCookie, issueSession, sessionCookie } from "./session";
 import type { Store } from "./store/types";
@@ -37,6 +38,10 @@ import { timingSafeEqual } from "./utils";
 export interface AuthPluginOptions {
   store: Store;
   auth?: AuthConfig;
+  /** Throttle the passphrase endpoints. Defaults ON whenever auth is on — the
+   *  deployment that most needs a guessing budget is the one nobody
+   *  configured. See ratelimit.ts for when turning it off is reasonable. */
+  rateLimit?: boolean;
   /** Overrides the origin advertised in OAuth metadata. Only needed behind a
    *  proxy that rewrites Host — see oauth.ts on why this must be exact. */
   publicUrl?: string;
@@ -93,8 +98,15 @@ export function authPlugin({
   auth = {},
   publicUrl,
   instanceName = "digger-node",
+  rateLimit,
 }: AuthPluginOptions) {
   const guarded = authEnabled(auth);
+  const throttled = rateLimit ?? guarded;
+
+  /** 0 when the caller may try. One branch, so "is throttling on?" is answered
+   *  in one place rather than at each call site. */
+  const wait = (request: Request, bucket: "login" | "authorize") =>
+    throttled ? retryAfter(store, bucket, clientIp(request)) : Promise.resolve(0);
   const origin = (request: Request) => oauth.originOf(request, publicUrl);
 
   // A `name` makes this plugin deduplicated by Elysia: mounting it twice
@@ -261,7 +273,24 @@ export function authPlugin({
           resource: field("resource"),
         };
 
+        // Throttle BEFORE the comparison. Checking afterwards would still let
+        // an attacker learn "wrong" at full speed, which is the only signal
+        // they need — and would leak "right" to a locked-out caller.
+        const ip = clientIp(request);
+        const held = await wait(request, "authorize");
+        if (held > 0) {
+          return tooManyAttempts(
+            held,
+            approvalPage({
+              clientName: client.clientName ?? client.clientId,
+              error: `Too many failed attempts. Try again in ${held}s.`,
+              params,
+            }),
+          );
+        }
+
         if (!(await timingSafeEqual(field("passphrase"), auth.ownerPassphrase))) {
+          if (throttled) await recordFailure(store, "authorize", ip);
           return new Response(
             approvalPage({
               clientName: client.clientName ?? client.clientId,
@@ -271,6 +300,9 @@ export function authPlugin({
             { status: 401, headers: { "content-type": "text/html; charset=utf-8" } },
           );
         }
+        // A correct passphrase clears the record: an owner who mistypes twice
+        // and then succeeds must not carry those failures forward.
+        if (throttled) await recordSuccess(store, "authorize", ip);
 
         try {
           const code = await oauth.issueCode(store, {
@@ -344,15 +376,26 @@ export function authPlugin({
         const form = (body ?? {}) as Record<string, unknown>;
         const next = String(form.next ?? "/") || "/";
 
+        const ip = clientIp(request);
+        const held = await wait(request, "login");
+        if (held > 0) {
+          return tooManyAttempts(
+            held,
+            loginPage({ instanceName, error: `Too many failed attempts. Try again in ${held}s.` }),
+          );
+        }
+
         if (
           !auth.ownerPassphrase?.trim() ||
           !(await timingSafeEqual(String(form.passphrase ?? ""), auth.ownerPassphrase))
         ) {
+          if (throttled) await recordFailure(store, "login", ip);
           return new Response(loginPage({ instanceName, error: "That passphrase does not match." }), {
             status: 401,
             headers: { "content-type": "text/html; charset=utf-8" },
           });
         }
+        if (throttled) await recordSuccess(store, "login", ip);
 
         return new Response(null, {
           status: 302,

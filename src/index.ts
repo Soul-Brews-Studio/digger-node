@@ -41,6 +41,14 @@ export interface Env {
    * on why a mismatch here fails silently and only for OAuth clients.
    */
   PUBLIC_URL?: string;
+
+  /**
+   * Set to "off"/"false"/"0" to disable throttling of the passphrase endpoints.
+   * On by default whenever auth is on — the deployment that most needs a
+   * guessing budget is the one nobody configured. Reasonable to disable behind
+   * Cloudflare Access, on a private network, or with a long passphrase.
+   */
+  RATE_LIMIT?: string;
 }
 
 export default {
@@ -53,6 +61,13 @@ export default {
       embedder: env.AI ? workersAiEmbedder(env.AI, env.EMBED_MODEL || "@cf/baai/bge-m3") : null,
       auth: { ownerPassphrase: env.OWNER_PASSPHRASE, apiToken: env.API_TOKEN },
       publicUrl: env.PUBLIC_URL,
+      // undefined when the var is absent, so createApp's own default applies.
+      // Coercing an unset var to `true` here would force throttling on even
+      // with auth off, which is a different decision than "leave it to default".
+      rateLimit:
+        env.RATE_LIMIT === undefined
+          ? undefined
+          : !["off", "false", "0", "no"].includes(env.RATE_LIMIT.trim().toLowerCase()),
     });
     return app.fetch(request);
   },

@@ -20,9 +20,10 @@ import { join } from "node:path";
 import { createApp } from "../src/app";
 import { openSqliteStore } from "../src/store/sqlite";
 import type { Store } from "../src/store/types";
+import { lockoutSeconds } from "../src/ratelimit";
 import { sha256Base64Url } from "../src/utils";
 
-const migrations = ["0001_init.sql", "0002_embeddings.sql", "0003_oauth.sql", "0004_oauth_hashed.sql"].map((file) =>
+const migrations = ["0001_init.sql", "0002_embeddings.sql", "0003_oauth.sql", "0004_oauth_hashed.sql", "0005_rate_limit.sql"].map((file) =>
   readFileSync(join(import.meta.dir, "..", "migrations", file), "utf8"),
 );
 
@@ -766,6 +767,135 @@ describe("token audience", () => {
       }),
     );
     expect(response.status).toBe(200);
+  });
+});
+
+describe("rate limiting the passphrase", () => {
+  /**
+   * The passphrase is the only credential here a human chose, so it is the only
+   * one short enough to guess. Everything else has 32 bytes of entropy behind
+   * it. These tests are about the guessing budget, not the comparison.
+   */
+  const guess = (
+    app: ReturnType<typeof createApp>,
+    passphrase: string,
+    ip = "203.0.113.7",
+  ) =>
+    app.fetch(
+      new Request("http://localhost/login", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "cf-connecting-ip": ip,
+        },
+        body: new URLSearchParams({ passphrase }).toString(),
+      }),
+    );
+
+  test("five wrong guesses are allowed, the sixth is throttled", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    for (let i = 1; i <= 5; i++) {
+      expect({ attempt: i, status: (await guess(app, "wrong")).status }).toEqual({
+        attempt: i,
+        status: 401,
+      });
+    }
+    const sixth = await guess(app, "wrong");
+    expect(sixth.status).toBe(429);
+    // RFC 9110: seconds, and a client that honours it needs it present.
+    expect(Number(sixth.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(await sixth.text()).toContain("Too many failed attempts");
+  });
+
+  /**
+   * The throttle gates the ATTEMPT, not the verdict. Letting a locked-out caller
+   * through on a correct guess would tell them the moment they hit it, and the
+   * lockout would have protected nothing.
+   */
+  test("a throttled caller is refused even with the CORRECT passphrase", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    for (let i = 0; i < 5; i++) await guess(app, "wrong");
+
+    const right = await guess(app, PASSPHRASE);
+    expect(right.status).toBe(429);
+    expect(right.headers.get("set-cookie")).toBeNull();
+  });
+
+  test("the budget is per address, and per door", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    for (let i = 0; i < 5; i++) await guess(app, "wrong", "198.51.100.1");
+    expect((await guess(app, "wrong", "198.51.100.1")).status).toBe(429);
+
+    // A different address still has its full budget — one attacker must not be
+    // able to lock the owner out.
+    expect((await guess(app, "wrong", "198.51.100.99")).status).toBe(401);
+
+    // And /authorize is a separate bucket: hammering /login does not close it.
+    const { body: client } = await registerClient(app);
+    const consent = await app.fetch(
+      new Request("http://localhost/authorize", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "cf-connecting-ip": "198.51.100.1",
+        },
+        body: new URLSearchParams({
+          passphrase: "wrong",
+          client_id: client.client_id,
+          redirect_uri: REDIRECT,
+          code_challenge: await sha256Base64Url("v"),
+          code_challenge_method: "S256",
+        }).toString(),
+      }),
+    );
+    expect(consent.status).toBe(401);
+  });
+
+  test("a correct passphrase clears the record", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    const ip = "203.0.113.200";
+    for (let i = 0; i < 4; i++) await guess(app, "wrong", ip);
+    expect((await guess(app, PASSPHRASE, ip)).status).toBe(302);
+
+    // Four failures then a success must not leave one guess in the tank.
+    expect((await store.all("SELECT * FROM auth_attempts")).length).toBe(0);
+  });
+
+  test("the backoff doubles and is capped, so waiting always works", async () => {
+    expect(lockoutSeconds(4)).toBe(0);
+    expect(lockoutSeconds(5)).toBe(120);
+    expect(lockoutSeconds(6)).toBe(240);
+    expect(lockoutSeconds(7)).toBe(480);
+    // Capped — a mistake is recoverable by waiting, never only by redeploying.
+    expect(lockoutSeconds(50)).toBe(3600);
+  });
+
+  test("it is optional, and /health says which", async () => {
+    const off = createApp({ store, instanceName: "test", auth: { ownerPassphrase: PASSPHRASE }, rateLimit: false });
+    for (let i = 0; i < 8; i++) {
+      expect(
+        (
+          await off.fetch(
+            new Request("http://localhost/login", {
+              method: "POST",
+              headers: {
+                "content-type": "application/x-www-form-urlencoded",
+                "cf-connecting-ip": "203.0.113.99",
+              },
+              body: new URLSearchParams({ passphrase: "wrong" }).toString(),
+            }),
+          )
+        ).status,
+      ).toBe(401);
+    }
+    expect((await store.all("SELECT * FROM auth_attempts")).length).toBe(0);
+
+    const health = async (app: ReturnType<typeof createApp>) =>
+      ((await (await app.fetch(new Request("http://localhost/health"))).json()) as any).rate_limit;
+    expect(await health(off)).toBe(false);
+    expect(await health(appWith({ ownerPassphrase: PASSPHRASE }))).toBe(true);
+    // An open server has no passphrase to protect, so there is nothing to say.
+    expect(await health(createApp({ store, instanceName: "test" }))).toBeNull();
   });
 });
 

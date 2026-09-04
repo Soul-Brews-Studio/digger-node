@@ -210,6 +210,42 @@ wrangler secret put API_TOKEN
 That specificity matters: `"auth": true` on a server where only `API_TOKEN` is
 set would read as "claude.ai can connect", which it could not.
 
+### The passphrase has a guessing budget
+
+Every other secret here has real entropy — a 32-byte token, a PKCE verifier, a
+single-use code burned on the first failed exchange. The owner passphrase is the
+one a *human* chose, and `/login` and `/authorize` were willing to be asked about
+it without limit. On a `*.workers.dev` hostname, which is world-reachable the
+moment it exists, that is what turns a short passphrase from "weak" into "falls
+this afternoon". The crypto was never the weak link; the budget was.
+
+Five wrong guesses per address per door, then backoff: 2m, 4m, 8m … capped at an
+hour, so a mistake is always recoverable by waiting rather than by redeploying. A
+correct passphrase clears the record, and `/login` and `/authorize` have separate
+budgets. The throttle gates the **attempt**, not the verdict — a locked-out caller
+holding the right passphrase still gets a 429, or the lockout would tell them the
+moment they hit it.
+
+It is **not a perimeter**: it keys on `CF-Connecting-IP`, so many addresses means
+many budgets and a shared NAT gives many users one. It converts an unlimited
+online guessing attack into a limited one. A long passphrase is still the real
+defence; this buys the time to have chosen one.
+
+**Optional**, and off is a legitimate answer — behind Cloudflare Access, on a
+private network, or with a 40-character passphrase it buys nothing and costs a D1
+write per failed attempt:
+
+```bash
+wrangler secret put RATE_LIMIT   # or a var: "off" / "false" / "0" / "no"
+```
+
+On by default whenever auth is on, because the deployment that most needs a
+guessing budget is the one nobody configured. `/health` reports `rate_limit:
+true | false | null` (null = open server, nothing to protect). It fails **open**:
+if the store errors the attempt proceeds, because failing closed would let a
+transient database fault lock you out of your own corpus through the only door
+that could fix it.
+
 ### Three keys, one gate
 
 | Key | Who it is for | Why nothing else works for them |
