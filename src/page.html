@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__INSTANCE__ · digger-node</title>
+
+<!--
+  This is a real .html file, imported by page.ts as text.
+
+  It used to be a TypeScript template literal, and that cost a production bug:
+  a literal \n written inside the client JS became an ACTUAL newline when the
+  template was evaluated, cutting a JS string in half. Every route still
+  answered 200 and the page was inert. The workaround was NL =
+  String.fromCharCode(10), which worked and was a splint on a broken bone —
+  and it would have broken again the moment client code needed a backtick,
+  which is exactly what htm's tagged templates need.
+
+  So the client lives here instead, where a backtick is a backtick.
+-->
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  // The palette is CSS custom properties, not Tailwind literals, so the
+  // light/dark swap stays one media query instead of a `dark:` prefix on every
+  // element. Tailwind just names them.
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ground: "var(--ground)", panel: "var(--panel)", line: "var(--line)",
+          ink: "var(--ink)", dim: "var(--dim)", ember: "var(--ember)",
+          sage: "var(--sage)", clay: "var(--clay)", chip: "var(--chip)",
+        },
+        fontFamily: {
+          sans: ["ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+          // The reading voice. Node titles and bodies are the one thing on this
+          // page a HUMAN wrote, so they get a text face rather than the UI sans.
+          read: ["Iowan Old Style", "Palatino Linotype", "Palatino", "Georgia", "serif"],
+          mono: ["ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        },
+        borderRadius: { cozy: "14px" },
+        boxShadow: {
+          // Offset and soft blur, tinted warm. A zero-offset halo is decoration.
+          lamp: "0 1px 2px rgba(20,14,6,.20), 0 8px 24px -12px rgba(20,14,6,.45)",
+        },
+      },
+    },
+  };
+</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
+
+<style>
+  /*
+    Warm, lamp-lit. The old palette was blue-black with a cyan accent — a
+    monitoring dashboard for a server you do not love. The actual scene here is
+    one person writing into their own corpus, often at night, so the ground is a
+    warm charcoal and the accent is an ember rather than a status LED.
+
+    Dark is the DEFAULT, picked from that scene rather than from category habit.
+  */
+  :root {
+    --ground:#16130f; --panel:#1e1a15; --line:#312a22; --ink:#efe7da;
+    --dim:#a99e8d;            /* tinted from the ground's hue — never gray */
+    --ember:#e0a458; --sage:#8fbf7f; --clay:#e58e7c; --chip:#272019;
+    --lamp: radial-gradient(60rem 22rem at 22% -8rem, rgba(224,164,88,.10), transparent 70%);
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground:#f7f2e7; --panel:#fffdf8; --line:#e6dcc8; --ink:#2b2419;
+      --dim:#6f6453; --ember:#a2621d; --sage:#4f7d43; --clay:#a5482f; --chip:#f1e9d9;
+      --lamp: radial-gradient(60rem 22rem at 22% -8rem, rgba(162,98,29,.07), transparent 70%);
+      color-scheme: light;
+    }
+  }
+
+  body { background: var(--lamp), var(--ground); background-attachment: fixed; }
+
+  /*
+    The surfaces nobody draws. Selection, caret, scrollbar and focus ring all
+    ship with browser defaults that belong to no design system; theming them is
+    the cheapest signal that a page was built rather than assembled.
+  */
+  ::selection { background: color-mix(in oklab, var(--ember) 30%, transparent); color: var(--ink); }
+  input, textarea, select { caret-color: var(--ember); }
+  * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb { background: var(--line); border-radius: 99px; border: 3px solid transparent; background-clip: content-box; }
+  *::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--ember) 45%, var(--line)); background-clip: content-box; }
+  :focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; border-radius: 4px; }
+  a { text-underline-offset: 3px; }
+
+  /* One authored moment: rows settle in. Exponential ease-out from an
+     already-visible default, so nothing is invisible if motion is refused. */
+  @keyframes settle { from { opacity:.001; transform: translateY(5px); } to { opacity:1; transform:none; } }
+  .settle { animation: settle .34s cubic-bezier(.16,1,.3,1) both; }
+  @media (prefers-reduced-motion: reduce) { .settle { animation: none; } }
+
+  details.yaml > summary { list-style: none; cursor: pointer; }
+  details.yaml > summary::-webkit-details-marker { display: none; }
+  details.yaml > summary::before { content: "▸ "; color: var(--dim); }
+  details.yaml[open] > summary::before { content: "▾ "; }
+</style>
+</head>
+
+<body class="m-0 font-sans text-[14px] leading-relaxed text-ink antialiased">
+<div id="root"></div>
+
+<script>
+const { createElement, useState, useEffect, useCallback, useMemo, Fragment } = React;
+const html = htm.bind(createElement);
+const NL = "\n";
+
+// ── plumbing ─────────────────────────────────────────────────────────────────
+const j = async (url, opts) => {
+  const response = await fetch(url, opts);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.message || body?.error || ("HTTP " + response.status));
+  return body;
+};
+const post = (url, data) =>
+  j(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
+
+const when = (iso) => { try { return new Date(iso).toLocaleString(); } catch { return iso; } };
+
+// ── the call log, as YAML ────────────────────────────────────────────────────
+// A double-encoded JSON string in a table cell is unreadable by a human, which
+// defeats the point of having a call log at all.
+function toYaml(value, indent) {
+  indent = indent || 0;
+  const pad = "  ".repeat(indent);
+  if (value === null) return "~";
+  if (Array.isArray(value)) {
+    if (!value.length) return "[]";
+    return value.map((item) => {
+      const rendered = toYaml(item, indent + 1);
+      return rendered.includes(NL) ? pad + "-" + NL + rendered : pad + "- " + rendered.trim();
+    }).join(NL);
+  }
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value);
+    if (!keys.length) return "{}";
+    return keys.map((key) => {
+      const child = value[key];
+      const branch = child && typeof child === "object";
+      const rendered = toYaml(child, indent + 1);
+      return branch && rendered.includes(NL)
+        ? pad + key + ":" + NL + rendered
+        : pad + key + ": " + String(rendered).trim();
+    }).join(NL);
+  }
+  const text = String(value);
+  return text.includes(NL) ? text.split(NL).map((l) => pad + l).join(NL).trim() : text;
+}
+const tryParse = (raw) => {
+  if (typeof raw !== "string") return raw;
+  const t = raw.trim();
+  if (!t.startsWith("{") && !t.startsWith("[")) return undefined;
+  try { return JSON.parse(t); } catch { return undefined; }
+};
+function summarise(raw) {
+  const parsed = tryParse(raw);
+  if (parsed === undefined) return raw && raw.length > 60 ? raw.slice(0, 60) + "…" : raw;
+  if (parsed && typeof parsed === "object") {
+    if (Array.isArray(parsed.nodes)) return parsed.nodes.length + " node(s)" + (parsed.mode ? " · " + parsed.mode : "");
+    if (Array.isArray(parsed.calls)) return parsed.calls.length + " call(s)";
+    if (Array.isArray(parsed.types)) return parsed.types.length + " type(s) · " + parsed.policy;
+    if (Array.isArray(parsed.terms) && !parsed.id) return parsed.terms.length + " term(s)";
+    if (parsed.title) return parsed.title;
+    if (parsed.deleted) return "deleted " + parsed.deleted;
+    return Object.keys(parsed).slice(0, 3).map((k) => k + "=" + JSON.stringify(parsed[k])).join(" ").slice(0, 70);
+  }
+  return String(parsed).slice(0, 70);
+}
+
+/**
+ * Size a tag by usage on a LOG scale.
+ *
+ * Linear sizing looks right until one tag runs away: with counts of 1 and 40 it
+ * makes every other tag identically tiny and the cloud stops carrying
+ * information. Log compresses the tail, which is why clouds have always used it.
+ */
+const cloudSize = (usage, max) =>
+  !max || usage <= 0 ? 11 : (11 + (Math.log(1 + usage) / Math.log(1 + max)) * 9).toFixed(1);
+
+// ── routing ──────────────────────────────────────────────────────────────────
+// Selection lives in the URL, so a filtered view is shareable and survives a
+// reload: #/terms/id1,id2/all
+function readRoute() {
+  const parts = location.hash.slice(2).split("/");
+  const kind = parts[0] || "";
+  if (kind === "terms" && parts[1]) {
+    return { kind, terms: decodeURIComponent(parts[1]).split(",").filter(Boolean),
+             match: parts[2] === "all" ? "all" : "any" };
+  }
+  return { kind, terms: [], match: "any", value: decodeURIComponent(parts.slice(1).join("/") || "") };
+}
+
+// ── shared bits ──────────────────────────────────────────────────────────────
+const Panel = ({ title, action, children, className }) => html`
+  <section class=${"rounded-cozy border border-line bg-panel px-5 pb-5 pt-4 shadow-lamp " + (className || "")}>
+    <h2 class="mb-3 flex items-center justify-between gap-2 text-[11px] font-semibold uppercase tracking-[.1em] text-dim">
+      <span>${title}</span>${action}
+    </h2>
+    ${children}
+  </section>`;
+
+const Field = ({ label, children }) => html`
+  <label class="grid gap-1 text-[11px] text-dim">${label}${children}</label>`;
+
+const inputCls =
+  "rounded-lg border border-line bg-ground px-3 py-2 text-[14px] text-ink " +
+  "placeholder:text-dim/70 focus:border-ember/60 focus-visible:outline-none " +
+  "focus:ring-2 focus:ring-ember/25 transition-colors";
+
+const Empty = ({ children }) => html`<p class="py-3 text-dim">${children}</p>`;
+
+// ── the app ──────────────────────────────────────────────────────────────────
+function App() {
+  const [route, setRoute] = useState(readRoute);
+  const [health, setHealth] = useState(null);
+  const [tax, setTax] = useState({ vocabularies: [], terms: [] });
+  const [types, setTypes] = useState({ policy: "free", types: [] });
+  const [stats, setStats] = useState(null);
+  const [untagged, setUntagged] = useState(0);
+  const [nodes, setNodes] = useState(null);
+  const [heading, setHeading] = useState("Content");
+  const [calls, setCalls] = useState(null);
+  const [q, setQ] = useState("");
+  const [mode, setMode] = useState("text");
+  const [taxOpen, setTaxOpen] = useState(false);
+  const [formMsg, setFormMsg] = useState(null);
+  const [taxMsg, setTaxMsg] = useState(null);
+
+  const selected = useMemo(() => new Set(route.terms || []), [route.terms]);
+
+  useEffect(() => {
+    const onHash = () => setRoute(readRoute());
+    addEventListener("hashchange", onHash);
+    return () => removeEventListener("hashchange", onHash);
+  }, []);
+
+  const loadSide = useCallback(async () => {
+    const [h, t, ty, s, c] = await Promise.all([
+      j("/health").catch(() => null),
+      j("/api/terms").catch(() => ({ terms: [] })),
+      j("/api/types").catch(() => ({ policy: "free", types: [] })),
+      j("/api/stats").catch(() => null),
+      j("/api/calls?limit=25").catch(() => ({ calls: [] })),
+    ]);
+    // The untagged count is its own query — /api/stats does not carry one.
+    j("/api/nodes?untagged=1").then((d) => setUntagged(d.count || 0)).catch(() => setUntagged(0));
+    const v = await j("/api/vocabularies").catch(() => ({ vocabularies: [] }));
+    setHealth(h); setTypes(ty); setStats(s); setCalls(c.calls || []);
+    setTax({ vocabularies: v.vocabularies || [], terms: t.terms || [] });
+  }, []);
+
+  const loadNodes = useCallback(async () => {
+    setNodes(null);
+    try {
+      if (route.kind === "untagged") {
+        const d = await j("/api/nodes?untagged=1");
+        setHeading("Untagged · " + d.count + " waiting to be classified");
+        return setNodes(d.nodes);
+      }
+      if (q.trim()) {
+        const d = await j("/api/nodes?q=" + encodeURIComponent(q.trim()) + "&mode=" + mode);
+        setHeading("“" + q.trim() + "” · " + d.count + " hit(s) · " + (d.mode || mode));
+        return setNodes(d.nodes);
+      }
+      if (selected.size) {
+        const ids = [...selected].join(",");
+        const d = await j("/api/nodes?term_ids=" + encodeURIComponent(ids) + "&match=" + route.match);
+        setHeading(selected.size + " tag(s) · " + route.match + " · " + d.count);
+        return setNodes(d.nodes);
+      }
+      const d = await j("/api/nodes");
+      setHeading("Content");
+      setNodes(d.nodes);
+    } catch (e) {
+      setHeading("Content");
+      setNodes([]);
+      setFormMsg({ kind: "bad", text: e.message });
+    }
+  }, [route.kind, route.match, q, mode, selected]);
+
+  useEffect(() => { loadSide(); }, [loadSide]);
+  useEffect(() => { loadNodes(); }, [loadNodes]);
+
+  const refresh = async () => { await Promise.all([loadSide(), loadNodes()]); };
+
+  const toggleTerm = (id) => {
+    const next = new Set(selected);
+    next.has(id) ? next.delete(id) : next.add(id);
+    location.hash = next.size
+      ? "#/terms/" + encodeURIComponent([...next].join(",")) + "/" + route.match
+      : "#/";
+  };
+
+  const maxUsage = useMemo(
+    () => (tax.terms || []).reduce((m, t) => Math.max(m, Number(t.usage) || 0), 0),
+    [tax.terms],
+  );
+
+  // ── create ──
+  const onCreate = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const title = f.title_.value.trim();
+    if (!title) return;
+    const type = (f.type_free.value.trim() || f.type_select.value || "note");
+    setFormMsg({ kind: "dim", text: "saving…" });
+    try {
+      await post("/api/nodes", { title, body: f.body_.value, type });
+      f.reset();
+      setFormMsg({ kind: "ok", text: "Saved. An agent will classify it." });
+      await refresh();
+    } catch (err) {
+      setFormMsg({ kind: "bad", text: err.message });
+    }
+  };
+
+  const onTaxonomy = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const name = f.v_name.value.trim();
+    if (!name) return;
+    setTaxMsg({ kind: "dim", text: "saving…" });
+    try {
+      await post("/api/vocabularies", { name, kind: f.v_kind.value });
+      if (f.t_name.value.trim()) {
+        await post("/api/terms", {
+          vocabulary: name, name: f.t_name.value.trim(), weight: Number(f.t_weight.value) || 0,
+        });
+      }
+      f.reset();
+      setTaxMsg({ kind: "ok", text: "Created." });
+      await loadSide();
+    } catch (err) {
+      setTaxMsg({ kind: "bad", text: err.message });
+    }
+  };
+
+  const del = async (id) => {
+    try { await j("/api/nodes/" + id, { method: "DELETE" }); await refresh(); }
+    catch (err) { setFormMsg({ kind: "bad", text: err.message }); }
+  };
+
+  const msgCls = (m) =>
+    "min-h-4 text-[12px] " + (m?.kind === "bad" ? "text-clay" : m?.kind === "ok" ? "text-sage" : "text-dim");
+
+  const byVocab = useMemo(() => {
+    const map = new Map();
+    for (const v of tax.vocabularies) map.set(v.name, { vocab: v, terms: [] });
+    for (const t of tax.terms) {
+      if (!map.has(t.vocabulary)) map.set(t.vocabulary, { vocab: { name: t.vocabulary, kind: t.vocabulary_kind }, terms: [] });
+      map.get(t.vocabulary).terms.push(t);
+    }
+    return [...map.values()];
+  }, [tax]);
+
+  return html`
+    <${Fragment}>
+      <header class="sticky top-0 z-10 flex flex-wrap items-center gap-x-4 gap-y-2
+                     border-b border-line bg-ground/85 px-6 py-3 backdrop-blur-sm">
+        <h1 class="m-0 text-[15px] font-semibold tracking-tight">
+          <a href="#/" class="text-ink no-underline hover:text-ember">__INSTANCE__</a>
+        </h1>
+        <form class="flex min-w-[240px] flex-1 gap-2 sm:max-w-md" onSubmit=${(e) => { e.preventDefault(); loadNodes(); }}>
+          <input class=${inputCls + " min-w-0 flex-1"} type="search" value=${q} placeholder="Search title and body…"
+                 autocomplete="off" onInput=${(e) => setQ(e.target.value)} />
+          <select class=${inputCls + " shrink-0"} value=${mode} onChange=${(e) => setMode(e.target.value)}
+                  title="text = trigram index · semantic = meaning · hybrid = both, measured worse than text">
+            <option value="text">text</option>
+            <option value="semantic">semantic</option>
+            <option value="hybrid">hybrid</option>
+          </select>
+        </form>
+        ${health && html`
+          <span class="hidden font-mono text-[11px] text-dim sm:inline">
+            v${health.version} · ${health.driver} · ${
+              health.auth === "none" ? html`<span class="text-clay">open</span>` : "auth " + [].concat(health.auth).join(",")
+            } · ${health.tools} tools${health.embedder ? " · embedder on" : ""}
+          </span>`}
+      </header>
+
+      <div class="mx-auto grid max-w-[1240px] items-start gap-6 px-6 py-6 lg:grid-cols-[320px_1fr]">
+        <aside class="grid gap-5">
+          <${Panel} title="Add content">
+            <form class="grid gap-3" onSubmit=${onCreate}>
+              <input name="title_" class=${inputCls + " w-full"} placeholder="Title" required maxlength="200" />
+              <textarea name="body_" class=${inputCls + " w-full min-h-[92px] font-read text-[15px] leading-7"}
+                        placeholder="Body" rows="4"></textarea>
+              <${Field} label="type">
+                <span class="flex gap-2">
+                  <select name="type_select" class=${inputCls + " min-w-0 flex-1"}>
+                    ${(types.types || []).map((t) => html`<option key=${t.type} value=${t.type}>${t.type} (${t.count})</option>`)}
+                  </select>
+                  <input name="type_free" class=${inputCls + " min-w-0 flex-1"} placeholder="or new type" />
+                </span>
+              <//>
+              <button type="submit" class="rounded-lg bg-ember px-4 py-2 font-semibold text-ground
+                                           shadow-lamp transition hover:brightness-110 active:brightness-95">
+                Create node
+              </button>
+              <p class="m-0 text-[11px] leading-5 text-dim">
+                Tags are the model's job — write it here and let an agent file it.
+                Anything unclassified waits in <a class="text-ember" href="#/untagged">untagged</a>.
+              </p>
+              <div class=${msgCls(formMsg)}>${formMsg?.text || ""}</div>
+            </form>
+          <//>
+
+          <${Panel} title="Organization" action=${html`
+            <button type="button" onClick=${() => setTaxOpen((v) => !v)}
+                    class="rounded-md border border-line px-2 py-1 text-[11px] font-normal normal-case tracking-normal
+                           text-dim transition hover:border-ember/60 hover:text-ember">
+              ${taxOpen ? "close" : "+ new"}
+            </button>`}>
+            ${taxOpen && html`
+              <form class="mb-4 grid gap-3 rounded-lg border border-line bg-ground/60 p-3" onSubmit=${onTaxonomy}>
+                <div class="flex gap-2">
+                  <${Field} label="vocabulary"><input name="v_name" class=${inputCls + " w-full"} placeholder="topics" required /><//>
+                  <${Field} label="kind">
+                    <select name="v_kind" class=${inputCls + " w-full"}>
+                      <option value="tags">tags (free)</option>
+                      <option value="categories">categories (controlled)</option>
+                    </select>
+                  <//>
+                </div>
+                <div class="flex gap-2">
+                  <${Field} label="term (optional)"><input name="t_name" class=${inputCls + " w-full"} placeholder="mcp" /><//>
+                  <${Field} label="weight"><input name="t_weight" type="number" defaultValue="0" class=${inputCls + " w-full"} /><//>
+                </div>
+                <button type="submit" class="rounded-lg border border-line px-3 py-2 text-[13px] transition hover:border-ember/60 hover:text-ember">Create</button>
+                <div class=${msgCls(taxMsg)}>${taxMsg?.text || ""}</div>
+              </form>`}
+
+            ${selected.size > 0 && html`
+              <div class="mb-3 flex items-center gap-2">
+                <span class="flex-1 font-mono text-[11px] text-dim">${selected.size} tag(s) selected</span>
+                <select class=${inputCls + " py-1 text-[12px]"} value=${route.match}
+                        onChange=${(e) => { location.hash = "#/terms/" + encodeURIComponent([...selected].join(",")) + "/" + e.target.value; }}
+                        title="all = every tag (AND) · any = at least one (OR)">
+                  <option value="any">any</option>
+                  <option value="all">all</option>
+                </select>
+                <button type="button" onClick=${() => { location.hash = "#/"; }}
+                        class="rounded-md border border-line px-2 py-1 text-[11px] text-dim transition hover:border-ember/60 hover:text-ember">clear</button>
+              </div>`}
+
+            ${byVocab.length === 0
+              ? html`<${Empty}>No vocabularies yet. An agent creates them as it files things.<//>`
+              : byVocab.map(({ vocab, terms }) => {
+                  const menu = vocab.kind === "categories";
+                  return html`
+                    <div key=${vocab.name} class="mb-4 last:mb-0">
+                      <div class="mb-1.5 flex items-baseline gap-2">
+                        <b class="text-[12px] font-semibold text-dim">${vocab.name}</b>
+                        <span class="text-[10px] uppercase tracking-[.08em] text-dim/60">${menu ? "menu" : "cloud"}</span>
+                      </div>
+                      <div class=${menu ? "grid gap-1" : "flex flex-wrap items-baseline gap-1.5"}>
+                        ${terms.map((t) => {
+                          const on = selected.has(t.id);
+                          const size = menu ? 12 : cloudSize(Number(t.usage) || 0, maxUsage);
+                          return html`
+                            <button key=${t.id} type="button" aria-pressed=${on} onClick=${() => toggleTerm(t.id)}
+                              style=${{ fontSize: size + "px" }}
+                              class=${"rounded-full border px-2.5 py-0.5 text-left transition " +
+                                (menu ? "block w-full rounded-md " : "") +
+                                (on ? "border-ember/70 bg-ember/15 text-ember "
+                                    : "border-transparent bg-chip text-ink hover:border-ember/50 hover:text-ember ") +
+                                (Number(t.usage) ? "" : "opacity-50")}>
+                              ${t.name}<span class="ml-1 text-[.8em] tabular-nums opacity-60">${t.usage}</span>
+                            </button>`;
+                        })}
+                      </div>
+                    </div>`;
+                })}
+          <//>
+
+          <${Panel} title="Corpus" action=${untagged > 0 ? html`
+            <a href="#/untagged" class="font-mono text-[11px] font-normal normal-case tracking-normal text-clay">${untagged} untagged</a>` : null}>
+            ${!stats ? html`<${Empty}>…<//>` : html`
+              <div class="flex flex-wrap gap-x-7 gap-y-3">
+                ${[["nodes", stats.nodes], ["published", stats.published], ["vocabs", (stats.vocabularies || []).length],
+                   ["embedded", stats.embedding ? stats.embedding.embedded : 0]].map(([label, value]) => html`
+                  <div key=${label}>
+                    <b class="block text-[20px] font-semibold tabular-nums leading-tight">${value ?? 0}</b>
+                    <span class="text-[11px] text-dim">${label}</span>
+                  </div>`)}
+              </div>`}
+          <//>
+        </aside>
+
+        <main class="grid gap-5">
+          <${Panel} title=${heading}>
+            ${nodes === null
+              ? html`<${Empty}>Reading…<//>`
+              : nodes.length === 0
+                ? html`<${Empty}>Nothing here yet. Write something on the left.<//>`
+                : nodes.map((n, i) => html`
+                    <article key=${n.id} class=${"settle border-b border-line py-4 first:pt-0 last:border-0 last:pb-0"}
+                             style=${{ animationDelay: Math.min(i, 8) * 22 + "ms" }}>
+                      <h3 class="m-0 mb-1.5 font-read text-[17px] font-semibold leading-snug">${n.title}</h3>
+                      <div class="flex flex-wrap items-center gap-2 text-[12px] text-dim">
+                        <span class="rounded-full border border-line px-2 py-0.5">${n.type}</span>
+                        <span class="tabular-nums">${when(n.created_at)}</span>
+                        ${(n.terms || []).map((t) => html`
+                          <button key=${t.id} type="button" onClick=${() => toggleTerm(t.id)}
+                                  class="rounded-full bg-chip px-2 py-0.5 text-dim transition hover:text-ember">
+                            ${t.vocabulary}:${t.name}
+                          </button>`)}
+                        <button type="button" onClick=${() => del(n.id)}
+                                class="ml-auto rounded-md px-2 py-0.5 text-dim transition hover:text-clay">delete</button>
+                      </div>
+                      ${n.body && html`<p class="mt-2 max-w-[68ch] whitespace-pre-wrap break-words font-read text-[15px] leading-7 text-ink/90">${n.body}</p>`}
+                    </article>`)}
+          <//>
+
+          <${Panel} title="MCP call log">
+            ${!calls ? html`<${Empty}>…<//>`
+              : calls.length === 0 ? html`<${Empty}>No MCP calls yet. Connect a client and it fills up.<//>`
+              : html`
+                <div class="overflow-x-auto">
+                  <table class="w-full border-collapse text-[12px]">
+                    <thead><tr class="text-left text-dim">
+                      ${["when", "tool", "input", "result", "ms"].map((h) => html`
+                        <th key=${h} class="border-b border-line px-2 py-1.5 font-semibold">${h}</th>`)}
+                    </tr></thead>
+                    <tbody>
+                      ${calls.map((c) => html`
+                        <tr key=${c.id} class="align-top">
+                          <td class="border-b border-line px-2 py-1.5 tabular-nums text-dim">${when(c.called_at)}</td>
+                          <td class=${"border-b border-line px-2 py-1.5 font-mono " + (c.outcome === "error" ? "text-clay" : "text-ember")}>${c.tool}</td>
+                          <td class="max-w-[22ch] border-b border-line px-2 py-1.5"><${Yaml} raw=${c.input} /></td>
+                          <td class="max-w-[34ch] border-b border-line px-2 py-1.5"><${Yaml} raw=${c.result} /></td>
+                          <td class="border-b border-line px-2 py-1.5 tabular-nums">${c.duration_ms}</td>
+                        </tr>`)}
+                    </tbody>
+                  </table>
+                </div>`}
+          <//>
+        </main>
+      </div>
+    <//>`;
+}
+
+const Yaml = ({ raw }) => {
+  const parsed = tryParse(raw);
+  if (parsed === undefined)
+    return html`<span class="break-words font-mono text-dim">${raw}</span>`;
+  return html`
+    <details class="yaml">
+      <summary class="font-mono text-dim">${summarise(raw)}</summary>
+      <pre class="mt-1.5 overflow-x-auto rounded-md bg-chip px-2.5 py-2 font-mono text-[11.5px] leading-6">${toYaml(parsed)}</pre>
+    </details>`;
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(html`<${App} />`);
+</script>
+</body>
+</html>

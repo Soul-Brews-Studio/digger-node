@@ -393,39 +393,6 @@ describe("json api", () => {
   });
 });
 
-describe("the page's generated JavaScript", () => {
-  test("parses — the whole client is built inside a template literal", async () => {
-    // This test exists because it already failed in production once. `\n`
-    // written inside the TS template literal became a REAL newline in the
-    // emitted HTML, so a JS string literal was cut in half and the browser
-    // reported only `Uncaught SyntaxError: Invalid or unexpected token`.
-    // Every route still returned 200; the page was simply inert. Nothing in
-    // typecheck or any other test could see it, because the client code is a
-    // string until a browser reads it.
-    const { page } = await import("../src/page");
-    const html = page("test-instance");
-    const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1];
-    expect(script).toBeTruthy();
-
-    // new Function() parses without executing — a syntax error throws here.
-    expect(() => new Function(script!)).not.toThrow();
-  });
-
-  test("uses the NL constant rather than an escape that must survive templating", async () => {
-    // The convention that prevents the bug above: no escape sequence is written
-    // into the client, because this whole file is a template literal and a
-    // backslash-n here becomes a REAL newline there.
-    //
-    // (An earlier version of this test counted quotes per line and required an
-    // even number. It flagged perfectly valid lines mixing ' and " — a
-    // heuristic that fails on correct code is worse than no heuristic, and the
-    // new Function() parse above is the real guard.)
-    const { page } = await import("../src/page");
-    const script = page("x").match(/<script type="module">([\s\S]*?)<\/script>/)![1];
-    expect(script).toContain("const NL = String.fromCharCode(10)");
-  });
-});
-
 /**
  * Semantic search, against a DETERMINISTIC fake embedder.
  *
@@ -837,11 +804,50 @@ describe("tagging is the model's job", () => {
   test("the create form does not ask a human for tags", async () => {
     const { page } = await import("../src/page");
     const html = page("x");
-    // No tag input, no picker: a person supplies title/body/type — the things a
-    // person knows — and classification is left to something that is good at it.
-    expect(html).not.toContain('id="f_terms"');
-    expect(html).not.toContain('id="tagPicker"');
-    // Tags still appear, as READ controls.
-    expect(html).toContain("filter by this tag");
+
+    // A person supplies the things a person knows — title, body, type — and
+    // classification is left to something that is good at it. The form's fields
+    // are named, so this asserts the whole set rather than the absence of one
+    // spelling of a tag input.
+    const form = html.slice(html.indexOf("onSubmit=${onCreate}"), html.indexOf("Create node"));
+    const names = [...form.matchAll(/name="([a-z_]+)"/g)].map((m) => m[1]).sort();
+    expect(names).toEqual(["body_", "title_", "type_free", "type_select"]);
+
+    // Tags still appear — as READ controls that filter.
+    expect(html).toContain("toggleTerm");
+  });
+
+  /**
+   * The regression guard that earned its place.
+   *
+   * When this page was a TS template literal, a literal \n inside the client
+   * code became a real newline on evaluation and cut a JS string in half. Every
+   * route answered 200, the page was inert, and nothing logged an error — the
+   * only way to catch it was to parse the emitted script. The page is a real
+   * .html file now, which makes that specific bug impossible, but the guard is
+   * cheap and the failure mode it covers (shipping unparseable client JS) is not
+   * unique to template literals.
+   */
+  test("the client script the page serves actually parses as JavaScript", async () => {
+    const { page } = await import("../src/page");
+    const html = page("x");
+
+    const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)]
+      .map((m) => m[1])
+      .filter((s) => s.trim().length > 0);
+    expect(scripts.length).toBeGreaterThanOrEqual(2); // tailwind config + the app
+
+    for (const source of scripts) {
+      expect(() => new Function(source)).not.toThrow();
+    }
+  });
+
+  test("the instance name is escaped into the page, not interpolated raw", async () => {
+    const { page } = await import("../src/page");
+    const html = page('evil"><script>alert(1)</script>');
+    expect(html).not.toContain("<script>alert(1)");
+    expect(html).toContain("&lt;script&gt;alert(1)");
+    // And it reaches both the title and the header link.
+    expect(html.match(/&lt;script&gt;alert\(1\)/g)!.length).toBeGreaterThanOrEqual(2);
   });
 });
