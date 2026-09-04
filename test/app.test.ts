@@ -16,7 +16,7 @@ import { createApp } from "../src/app";
 import { openSqliteStore } from "../src/store/sqlite";
 import type { Store } from "../src/store/types";
 
-const migrations = ["0001_init.sql", "0002_embeddings.sql", "0003_oauth.sql", "0004_oauth_hashed.sql", "0005_rate_limit.sql"].map((file) =>
+const migrations = ["0001_init.sql", "0002_embeddings.sql", "0003_oauth.sql", "0004_oauth_hashed.sql", "0005_rate_limit.sql", "0006_settings.sql"].map((file) =>
   readFileSync(join(import.meta.dir, "..", "migrations", file), "utf8"),
 );
 

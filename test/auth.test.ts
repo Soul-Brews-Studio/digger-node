@@ -23,7 +23,7 @@ import type { Store } from "../src/store/types";
 import { lockoutSeconds } from "../src/ratelimit";
 import { sha256Base64Url } from "../src/utils";
 
-const migrations = ["0001_init.sql", "0002_embeddings.sql", "0003_oauth.sql", "0004_oauth_hashed.sql", "0005_rate_limit.sql"].map((file) =>
+const migrations = ["0001_init.sql", "0002_embeddings.sql", "0003_oauth.sql", "0004_oauth_hashed.sql", "0005_rate_limit.sql", "0006_settings.sql"].map((file) =>
   readFileSync(join(import.meta.dir, "..", "migrations", file), "utf8"),
 );
 
@@ -896,6 +896,118 @@ describe("rate limiting the passphrase", () => {
     expect(await health(appWith({ ownerPassphrase: PASSPHRASE }))).toBe(true);
     // An open server has no passphrase to protect, so there is nothing to say.
     expect(await health(createApp({ store, instanceName: "test" }))).toBeNull();
+  });
+});
+
+describe("changing the lock", () => {
+  const login = (app: ReturnType<typeof createApp>, passphrase: string) =>
+    app.fetch(formTo("/login", { passphrase }));
+  const cookieOf = (r: Response) => (r.headers.get("set-cookie") ?? "").split(";")[0];
+
+  const change = (app: ReturnType<typeof createApp>, cookie: string, current: string, next: string) =>
+    app.fetch(new Request("http://localhost/api/passphrase", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ current, next }),
+    }));
+
+  test("a new passphrase works and the old one stops", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    const cookie = cookieOf(await login(app, PASSPHRASE));
+
+    const res = await change(app, cookie, PASSPHRASE, "a-memorable-one");
+    expect(res.status).toBe(200);
+
+    expect((await login(app, "a-memorable-one")).status).toBe(302);
+    expect((await login(app, PASSPHRASE)).status).toBe(302); // env secret still opens it — recovery
+  });
+
+  /**
+   * The recovery path is deliberate, not an oversight: forgetting what you typed
+   * into the UI must not be equivalent to losing the corpus. The deployed secret
+   * always works, from a machine you control.
+   */
+  test("the deployed secret remains a recovery path after a change", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    const cookie = cookieOf(await login(app, PASSPHRASE));
+    await change(app, cookie, PASSPHRASE, "something-else-entirely");
+    expect((await login(app, PASSPHRASE)).status).toBe(302);
+  });
+
+  test("the current passphrase is required even with a live session", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    const cookie = cookieOf(await login(app, PASSPHRASE));
+    // A live session proves someone got in once, not that they are the owner
+    // now — and changing the lock is exactly what a hijacked session would want.
+    const res = await change(app, cookie, "not-the-current-one", "brand-new-value");
+    expect(res.status).toBe(401);
+    expect((await login(app, "brand-new-value")).status).toBe(401);
+  });
+
+  test("a too-short passphrase is refused with the reason", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    const cookie = cookieOf(await login(app, PASSPHRASE));
+    const res = await change(app, cookie, PASSPHRASE, "short");
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as any).message).toContain("at least");
+  });
+
+  test("changing the lock signs OTHER sessions out", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    const other = cookieOf(await login(app, PASSPHRASE));
+    const mine = cookieOf(await login(app, PASSPHRASE));
+
+    expect((await app.fetch(new Request("http://localhost/api/nodes", { headers: { cookie: other } }))).status).toBe(200);
+
+    const res = await change(app, mine, PASSPHRASE, "the-new-lock-value");
+    // The session that made the change is re-issued, so you are not locked out
+    // of the browser you just used.
+    const reissued = cookieOf(res);
+    expect(reissued).toContain("digger_session=");
+    expect((await app.fetch(new Request("http://localhost/api/nodes", { headers: { cookie: reissued } }))).status).toBe(200);
+
+    // Every other device is out.
+    expect((await app.fetch(new Request("http://localhost/api/nodes", { headers: { cookie: other } }))).status).toBe(401);
+  });
+
+  test("the stored passphrase is never readable, only its existence", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    const cookie = cookieOf(await login(app, PASSPHRASE));
+    // The change rotates the session key, so it hands back a re-issued cookie.
+    // Carrying the old one forward is exactly the mistake a client would make.
+    const fresh = cookieOf(await change(app, cookie, PASSPHRASE, "a-memorable-one"));
+
+    const rows = await store.all<{ value: string }>("SELECT value FROM settings");
+    expect(rows[0].value).not.toContain("a-memorable-one");
+    // PBKDF2, not a bare digest: a passphrase chosen to be REMEMBERED falls to a
+    // wordlist against sha256, which is why this file is not sha256Base64Url.
+    expect(rows[0].value).toMatch(/^pbkdf2\$\d+\$/);
+
+    const shown = (await (await app.fetch(new Request("http://localhost/api/passphrase", { headers: { cookie: fresh } }))).json()) as any;
+    expect(shown).toEqual({ stored: true, min_length: 8 });
+  });
+
+  test("the cookie that made the change is the only one that still works", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    const cookie = cookieOf(await login(app, PASSPHRASE));
+    const fresh = cookieOf(await change(app, cookie, PASSPHRASE, "a-memorable-one"));
+
+    expect((await app.fetch(new Request("http://localhost/api/passphrase", { headers: { cookie } }))).status).toBe(401);
+    expect((await app.fetch(new Request("http://localhost/api/passphrase", { headers: { cookie: fresh } }))).status).toBe(200);
+  });
+
+  test("reverting drops back to the deployed secret", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    const cookie = cookieOf(await login(app, PASSPHRASE));
+    const fresh = cookieOf(await change(app, cookie, PASSPHRASE, "a-memorable-one"));
+
+    // Must use the re-issued cookie — the old one died with the old lock.
+    const reverted = await app.fetch(
+      new Request("http://localhost/api/passphrase", { method: "DELETE", headers: { cookie: fresh } }),
+    );
+    expect(reverted.status).toBe(200);
+    expect((await login(app, "a-memorable-one")).status).toBe(401);
+    expect((await login(app, PASSPHRASE)).status).toBe(302);
   });
 });
 

@@ -79,6 +79,10 @@ export async function authenticate(
    * against; a token recorded for one resource must not open another.
    */
   expectedResource?: string,
+  /** The key the session cookie is signed with. Folds in the STORED passphrase,
+   *  so changing it from the UI invalidates every outstanding session. Falls
+   *  back to the env secret when the caller has nothing better. */
+  sessionKey?: string,
 ): Promise<AuthResult> {
   if (!authEnabled(config)) return OPEN;
 
@@ -113,7 +117,7 @@ export async function authenticate(
   }
 
   const cookie = readCookie(request.headers.get("cookie"), SESSION_COOKIE_NAME);
-  if (await verifySession(config.ownerPassphrase, cookie)) {
+  if (await verifySession(sessionKey ?? config.ownerPassphrase, cookie)) {
     return { ok: true, method: "owner-session" };
   }
 

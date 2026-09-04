@@ -533,7 +533,7 @@ export async function stats(store: Store): Promise<Record<string, unknown>> {
 // PHASE. Nothing above this line knows or cares whether vectors exist.
 
 import { cosine, embedText, packVector, textHash, unpackVector } from "./embed";
-import { VECTORS } from "./sql";
+import { TIMELINE, VECTORS } from "./sql";
 
 export interface EmbedResult {
   embedded: number;
@@ -637,4 +637,37 @@ export async function embeddingCoverage(
     spaces: row?.spaces ?? 0,
     space: embedder?.space ?? null,
   };
+}
+
+
+export interface TimelineEvent {
+  kind: "node" | "call";
+  id: string;
+  at: string;
+  label: string;
+  detail: string | null;
+  outcome: string | null;
+  duration_ms: number | null;
+}
+
+/**
+ * Every event, newest first, both kinds interleaved.
+ *
+ * Deliberately NOT two lists the client zips together: doing the merge in SQL is
+ * what lets the tiebreaker be `rowid`, which the client cannot see and which is
+ * the only thing that makes same-millisecond events deterministically ordered.
+ */
+export async function timeline(store: Store, limit = 80): Promise<TimelineEvent[]> {
+  const rows = await store.all<Record<string, unknown>>(TIMELINE.recent, [
+    clampLimit(limit, 80, 300),
+  ]);
+  return rows.map((r) => ({
+    kind: r.kind === "call" ? "call" : "node",
+    id: String(r.id),
+    at: String(r.at),
+    label: String(r.label ?? ""),
+    detail: r.detail == null ? null : String(r.detail),
+    outcome: r.outcome == null ? null : String(r.outcome),
+    duration_ms: r.duration_ms == null ? null : Number(r.duration_ms),
+  }));
 }

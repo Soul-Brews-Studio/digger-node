@@ -18,6 +18,7 @@ import { authPlugin } from "./auth-plugin";
 import * as db from "./db";
 import { handleMcp, resolveTermRefs, TOOLS } from "./mcp";
 import { page } from "./page";
+import { readStored } from "./passphrase";
 import { loginPage } from "./screens";
 import type { Embedder } from "./embed";
 import type { Store } from "./store/types";
@@ -287,6 +288,12 @@ export function createApp({
 
       .get("/api/tools", () => ({ tools: TOOLS }))
 
+      /** The corpus as one chronology — nodes and tool calls interleaved by
+       *  event time, merged in SQL so the rowid tiebreaker is available. */
+      .get("/api/timeline", async ({ query }) => ({
+        events: await db.timeline(store, query.limit ? Number(query.limit) : undefined),
+      }))
+
       .get("/api/stats", async () => ({
         ...(await db.stats(store)),
         embedding: await db.embeddingCoverage(store, embedder),
@@ -342,7 +349,8 @@ export function createApp({
        * nothing about the corpus is in it.
        */
       .get("/", async ({ request }) => {
-        if (guarded && !(await authenticate(store, request, auth)).ok) {
+        const key = (auth.ownerPassphrase ?? "") + "\u0000" + ((await readStored(store)) ?? "");
+        if (guarded && !(await authenticate(store, request, auth, undefined, key)).ok) {
           return new Response(loginPage({ instanceName }), {
             headers: { "content-type": "text/html; charset=utf-8" },
           });

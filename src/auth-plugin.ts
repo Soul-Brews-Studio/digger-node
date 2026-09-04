@@ -29,6 +29,7 @@ import { Elysia } from "elysia";
 
 import { authenticate, authEnabled, unauthorized, type AuthConfig } from "./auth";
 import * as oauth from "./oauth";
+import { checkOwner, clearPassphrase, MIN_PASSPHRASE, readStored, setPassphrase } from "./passphrase";
 import { clientIp, recordFailure, recordSuccess, retryAfter, tooManyAttempts } from "./ratelimit";
 import { approvalPage, loginPage } from "./screens";
 import { clearedSessionCookie, issueSession, sessionCookie } from "./session";
@@ -103,6 +104,20 @@ export function authPlugin({
   const guarded = authEnabled(auth);
   const throttled = rateLimit ?? guarded;
 
+  /**
+   * The key the session cookie is signed with.
+   *
+   * It folds in the STORED passphrase hash, not just the env secret, so that
+   * changing the passphrase from the UI invalidates every outstanding session —
+   * on every device. Signing with the env secret alone would mean "change the
+   * lock" left the old keys working, which is the opposite of what the button
+   * says it does.
+   */
+  const sessionKey = async () => {
+    const stored = await readStored(store);
+    return (auth.ownerPassphrase ?? "") + "\u0000" + (stored ?? "");
+  };
+
   /** 0 when the caller may try. One branch, so "is throttling on?" is answered
    *  in one place rather than at each call site. */
   const wait = (request: Request, bucket: "login" | "authorize") =>
@@ -131,7 +146,7 @@ export function authPlugin({
         if (isPublicPath(pathname)) return;
 
         // The audience a token must have been issued for, when it carries one.
-        const result = await authenticate(store, request, auth, `${origin(request)}/mcp`);
+        const result = await authenticate(store, request, auth, `${origin(request)}/mcp`, await sessionKey());
         // Returning a Response short-circuits the route. It carries its own
         // CORS headers because onAfterHandle does not run on this path, and a
         // 401 a browser cannot read teaches a client nothing — this particular
@@ -289,7 +304,7 @@ export function authPlugin({
           );
         }
 
-        if (!(await timingSafeEqual(field("passphrase"), auth.ownerPassphrase))) {
+        if (!(await checkOwner(store, field("passphrase"), auth.ownerPassphrase))) {
           if (throttled) await recordFailure(store, "authorize", ip);
           return new Response(
             approvalPage({
@@ -387,7 +402,7 @@ export function authPlugin({
 
         if (
           !auth.ownerPassphrase?.trim() ||
-          !(await timingSafeEqual(String(form.passphrase ?? ""), auth.ownerPassphrase))
+          !(await checkOwner(store, String(form.passphrase ?? ""), auth.ownerPassphrase))
         ) {
           if (throttled) await recordFailure(store, "login", ip);
           return new Response(loginPage({ instanceName, error: "That passphrase does not match." }), {
@@ -406,7 +421,7 @@ export function authPlugin({
             // successful login into an open redirect.
             location: next.startsWith("/") && !next.startsWith("//") ? next : "/",
             "set-cookie": sessionCookie(
-              await issueSession(auth.ownerPassphrase),
+              await issueSession(await sessionKey()),
               isSecureRequest(request),
             ),
           },
@@ -422,6 +437,66 @@ export function authPlugin({
           },
         });
       })
+
+      /**
+       * Change the lock.
+       *
+       * Requires the CURRENT passphrase even though the caller is already
+       * authenticated. A live session is proof someone got in once; it is not
+       * proof they are the owner right now, and "change the lock" is exactly the
+       * operation a hijacked session would want. Re-asking costs one field.
+       */
+      .post("/api/passphrase", async ({ body, request, set }) => {
+        const form = (body ?? {}) as Record<string, unknown>;
+        const current = String(form.current ?? "");
+        const next = String(form.next ?? "").trim();
+
+        if (!auth.ownerPassphrase?.trim()) {
+          set.status = 501;
+          return { error: "not_configured", message: "Set OWNER_PASSPHRASE before changing it." };
+        }
+        if (!(await checkOwner(store, current, auth.ownerPassphrase))) {
+          set.status = 401;
+          return { error: "wrong_passphrase", message: "That is not the current passphrase." };
+        }
+        if (next.length < MIN_PASSPHRASE) {
+          set.status = 400;
+          return { error: "too_short", message: `Use at least ${MIN_PASSPHRASE} characters.` };
+        }
+
+        await setPassphrase(store, next);
+        // Re-issue THIS session against the new key, so changing the lock does
+        // not sign the person who changed it out of their own browser.
+        return new Response(
+          JSON.stringify({ ok: true, message: "Passphrase changed. Other sessions were signed out." }),
+          {
+            headers: {
+              "content-type": "application/json",
+              "set-cookie": sessionCookie(await issueSession(await sessionKey()), isSecureRequest(request)),
+            },
+          },
+        );
+      })
+
+      /** Back to the deployed secret — the recovery path, in one call. */
+      .delete("/api/passphrase", async ({ request }) => {
+        await clearPassphrase(store);
+        return new Response(
+          JSON.stringify({ ok: true, message: "Reverted to the deployed OWNER_PASSPHRASE." }),
+          {
+            headers: {
+              "content-type": "application/json",
+              "set-cookie": sessionCookie(await issueSession(await sessionKey()), isSecureRequest(request)),
+            },
+          },
+        );
+      })
+
+      /** Is a passphrase stored, or are we on the deployed secret? Never the value. */
+      .get("/api/passphrase", async () => ({
+        stored: Boolean(await readStored(store)),
+        min_length: MIN_PASSPHRASE,
+      }))
 
       // ── who holds access ───────────────────────────────────────────────────
       // Behind the gate like any other /api route: this lists the clients that

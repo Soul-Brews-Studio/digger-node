@@ -277,6 +277,47 @@ export const RATE = {
   clear: `DELETE FROM auth_attempts WHERE bucket = ? AND client_ip = ?`,
 } as const;
 
+/** Key/value settings. One row per decision, so adding a setting is an INSERT
+ *  rather than a migration — the same reason taxonomy is rows. */
+export const SETTINGS = {
+  get: `SELECT value FROM settings WHERE key = ?`,
+  // args: key, value, updatedAt
+  put: `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  delete: `DELETE FROM settings WHERE key = ?`,
+} as const;
+
+/**
+ * The corpus as one chronology.
+ *
+ * Two kinds of event — a node was written, a tool was called — interleaved and
+ * ordered by EVENT TIME, which is the whole point: neither table alone shows the
+ * shape of a working session, and reading either one by insertion order is how
+ * you get a timeline that quietly lies.
+ *
+ * `ORDER BY at DESC, rowid DESC` and not `ORDER BY at DESC` alone. This project
+ * has already had a same-millisecond collision produce non-deterministic order
+ * in a list, caught by a test rather than by reasoning. Wall-clock time is not a
+ * unique key at machine speed, so the insertion counter is the tiebreaker.
+ *
+ * args: limit
+ */
+export const TIMELINE = {
+  recent: `SELECT * FROM (
+             SELECT 'node' AS kind, n.id AS id, n.created_at AS at,
+                    n.title AS label, n.type AS detail, NULL AS outcome,
+                    NULL AS duration_ms, n.rowid AS seq
+               FROM nodes n
+             UNION ALL
+             SELECT 'call' AS kind, c.id AS id, c.called_at AS at,
+                    c.tool AS label, c.client AS detail, c.outcome AS outcome,
+                    c.duration_ms AS duration_ms, c.rowid AS seq
+               FROM mcp_calls c
+           )
+           ORDER BY at DESC, seq DESC
+           LIMIT ?`,
+} as const;
+
 // ── composable statements ────────────────────────────────────────────────────
 //
 // Two queries take a variable shape: listing nodes (filters + optional taxonomy
