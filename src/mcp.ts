@@ -22,7 +22,7 @@ import type { Embedder } from "./embed";
 import { parseTermRef } from "./utils";
 
 const SERVER_NAME = "digger-node";
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "26.9.4";
 
 /** Revisions we know how to speak. A client asking for anything else still gets
  *  an answer — in the newest of these — rather than silence. */

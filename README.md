@@ -412,6 +412,21 @@ Sizes run 11px→20px on **log** scale: with counts of 1 and 40 a linear map mak
 every other tag identically tiny and the cloud stops carrying information, which
 is why tag clouds have always used log.
 
+## Versioning
+
+CalVer: **`v{yy}.{m}.{d}`** — `v26.9.4` is 2026-09-04, not "version 26". The
+fleet this came from versions the same way.
+
+The reason is honest rather than fashionable: this is a personal tool that ships
+whenever something is learned, so a semantic version number would be claiming a
+compatibility contract nobody is maintaining. A date says what it actually is —
+the state of the thing on the day it was cut. `/health` and the page footer
+report it, so a running deployment always names its own build.
+
+Tags before `v26.9.4` are semver (`v0.1.0`, `v0.2.0`); they are left alone rather
+than rewritten. CalVer sorts after them, so tooling that expects ordering keeps
+working.
+
 ## Local
 
 ```bash

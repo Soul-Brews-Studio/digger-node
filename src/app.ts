@@ -38,7 +38,7 @@ export interface AppOptions {
   rateLimit?: boolean;
 }
 
-const SERVER_VERSION = "0.2.0";
+const SERVER_VERSION = "26.9.4";
 
 /**
  * Authentication is OPT-IN, and which state a deployment is in is never left to

@@ -1,6 +1,6 @@
 {
   "name": "digger-node",
-  "version": "0.2.0",
+  "version": "26.9.4",
   "private": true,
   "type": "module",
   "description": "A Drupal-shaped content store \u2014 title, body, datetime, taxonomy \u2014 served to models over MCP from one Cloudflare Worker.",
