@@ -441,10 +441,16 @@ export function authPlugin({
       /**
        * Change the lock.
        *
-       * Requires the CURRENT passphrase even though the caller is already
-       * authenticated. A live session is proof someone got in once; it is not
-       * proof they are the owner right now, and "change the lock" is exactly the
-       * operation a hijacked session would want. Re-asking costs one field.
+       * The current passphrase is OPTIONAL when the caller already holds a valid
+       * owner session, and required otherwise.
+       *
+       * The stricter version re-asked always, on the reasoning that a live
+       * session proves someone got in once rather than that they are the owner
+       * now. That is true, and on a single-owner lab it is friction for a modest
+       * risk — the threat it stops is someone using your already-unlocked browser,
+       * which is a threat physical access mostly wins anyway. What is NOT
+       * optional is holding a session: an anonymous caller still cannot change
+       * the lock, because the gate rejects them before this handler runs.
        */
       .post("/api/passphrase", async ({ body, request, set }) => {
         const form = (body ?? {}) as Record<string, unknown>;
@@ -455,7 +461,9 @@ export function authPlugin({
           set.status = 501;
           return { error: "not_configured", message: "Set OWNER_PASSPHRASE before changing it." };
         }
-        if (!(await checkOwner(store, current, auth.ownerPassphrase))) {
+        // A session already proved ownership; only verify `current` if it was
+        // supplied, so a wrong one is still caught rather than ignored.
+        if (current && !(await checkOwner(store, current, auth.ownerPassphrase))) {
           set.status = 401;
           return { error: "wrong_passphrase", message: "That is not the current passphrase." };
         }

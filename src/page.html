@@ -240,6 +240,8 @@ function App() {
   const [lockOpen, setLockOpen] = useState(false);
   const [lockMsg, setLockMsg] = useState(null);
   const [lockInfo, setLockInfo] = useState(null);
+  const [vocabs, setVocabs] = useState([]);
+  const [setMsg, setSetMsg] = useState(null);
 
   const selected = useMemo(() => new Set(route.terms || []), [route.terms]);
 
@@ -264,6 +266,7 @@ function App() {
     const v = await j("/api/vocabularies").catch(() => ({ vocabularies: [] }));
     setHealth(h); setTypes(ty); setStats(s); setCalls(c.calls || []);
     setTax({ vocabularies: v.vocabularies || [], terms: t.terms || [] });
+    setVocabs(v.vocabularies || []);
   }, []);
 
   const loadNodes = useCallback(async () => {
@@ -357,6 +360,62 @@ function App() {
     catch (err) { setFormMsg({ kind: "bad", text: err.message }); }
   };
 
+  /**
+   * The server refuses an unknown content type and tells you how to allow it —
+   * `term_create{vocabulary:"type"}` — which is an MCP call a person reading the
+   * web form cannot make. The form offered "or new type" and then bounced it,
+   * which is an invitation the product could not honour. This turns the refusal
+   * into the button it was describing.
+   */
+  const refusedType = useMemo(() => {
+    const m = /^"(.+?)" is not an allowed content type/.exec(formMsg?.text || "");
+    return formMsg?.kind === "bad" && m ? m[1] : null;
+  }, [formMsg]);
+
+  const allowType = async (name) => {
+    setFormMsg({ kind: "dim", text: "allowing “" + name + "”…" });
+    try {
+      await post("/api/terms", { vocabulary: "type", name });
+      setFormMsg({ kind: "ok", text: "“" + name + "” is now an allowed type. Create the node again." });
+      await loadSide();
+    } catch (err) {
+      setFormMsg({ kind: "bad", text: err.message });
+    }
+  };
+
+  const dropVocabulary = async (name) => {
+    setSetMsg({ kind: "dim", text: "checking what that would cost…" });
+    try {
+      const impact = await j("/api/vocabularies/" + encodeURIComponent(name) + "/impact");
+      const cost = impact.terms + " term(s) and " + impact.assignments + " tag assignment(s)";
+      if ((impact.terms || impact.assignments) &&
+          !confirm("Deleting “" + name + "” also deletes " + cost + ". This cannot be undone. Continue?")) {
+        return setSetMsg(null);
+      }
+      const r = await j("/api/vocabularies/" + encodeURIComponent(name) + "?force=1", { method: "DELETE" });
+      setSetMsg({ kind: "ok", text: "Deleted “" + name + "” (" + r.terms + " terms, " + r.assignments + " assignments)." });
+      await refresh();
+    } catch (err) {
+      setSetMsg({ kind: "bad", text: err.message });
+    }
+  };
+
+  const addType = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const name = f.newtype.value.trim();
+    if (!name) return;
+    setSetMsg({ kind: "dim", text: "adding…" });
+    try {
+      await post("/api/terms", { vocabulary: "type", name });
+      f.reset();
+      setSetMsg({ kind: "ok", text: "“" + name + "” is now an allowed content type." });
+      await refresh();
+    } catch (err) {
+      setSetMsg({ kind: "bad", text: err.message });
+    }
+  };
+
   const lock = async () => {
     await fetch("/logout", { method: "POST" }).catch(() => {});
     location.reload();
@@ -418,7 +477,7 @@ function App() {
           </select>
         </form>
         <nav class="flex items-center gap-1 rounded-lg border border-line p-0.5">
-          ${["content", "timeline"].map((v) => html`
+          ${["content", "timeline", "settings"].map((v) => html`
             <button key=${v} type="button" onClick=${() => setView(v)}
               class=${"rounded-md px-2.5 py-1 text-[12px] transition " +
                 (view === v ? "bg-chip text-ember" : "text-dim hover:text-ink")}>${v}</button>`)}
@@ -461,6 +520,12 @@ function App() {
                 Anything unclassified waits in <a class="text-ember" href="#/untagged">untagged</a>.
               </p>
               <div class=${msgCls(formMsg)}>${formMsg?.text || ""}</div>
+              ${refusedType && html`
+                <button type="button" onClick=${() => allowType(refusedType)}
+                        class="rounded-lg border border-ember/50 px-3 py-2 text-[12px] text-ember
+                               transition hover:bg-ember/10">
+                  Allow “${refusedType}” as a content type
+                </button>`}
             </form>
           <//>
 
@@ -544,47 +609,82 @@ function App() {
                   </div>`)}
               </div>`}
           <//>
-          ${health && health.auth !== "none" && html`
-            <${Panel} title="Lock" action=${html`
-              <button type="button" onClick=${() => setLockOpen((v) => !v)}
-                      class="rounded-md border border-line px-2 py-1 text-[11px] font-normal normal-case
-                             tracking-normal text-dim transition hover:border-ember/60 hover:text-ember">
-                ${lockOpen ? "close" : "change"}
-              </button>`}>
-              <p class="m-0 text-[12px] leading-5 text-dim">
-                ${lockInfo && lockInfo.stored
-                  ? "Using a passphrase you set here."
-                  : "Using the deployed OWNER_PASSPHRASE secret."}
-              </p>
-              ${lockOpen && html`
-                <form class="mt-3 grid gap-3" onSubmit=${changeLock}>
-                  <${Field} label="current passphrase">
-                    <input name="cur" type="password" class=${inputCls + " w-full"} required
-                           autocomplete="current-password" />
-                  <//>
-                  <${Field} label=${"new passphrase (min " + ((lockInfo && lockInfo.min_length) || 8) + ")"}>
-                    <input name="nxt" type="password" class=${inputCls + " w-full"} required
-                           autocomplete="new-password" />
-                  <//>
-                  <button type="submit" class="rounded-lg bg-ember px-3 py-2 text-[13px] font-semibold text-ground
-                                               transition hover:brightness-110">Change the lock</button>
-                  <p class="m-0 text-[11px] leading-5 text-dim">
-                    Other browsers are signed out. The deployed secret keeps working as a
-                    recovery path, so forgetting this is not losing the corpus.
-                  </p>
-                  ${lockInfo && lockInfo.stored && html`
-                    <button type="button" onClick=${revertLock}
-                            class="rounded-lg border border-line px-3 py-2 text-[12px] text-dim transition
-                                   hover:border-clay/60 hover:text-clay">
-                      Revert to the deployed secret
-                    </button>`}
-                  <div class=${msgCls(lockMsg)}>${lockMsg?.text || ""}</div>
-                </form>`}
-            <//>`}
         </aside>
 
         <main class="grid gap-5">
-          ${view === "timeline" ? html`
+          ${view === "settings" ? html`
+            <${Panel} title="Content types">
+              <p class="m-0 mb-3 max-w-[62ch] text-[12px] leading-5 text-dim">
+                ${types.policy === "controlled"
+                  ? "A controlled vocabulary named “type” is deciding what a node may be. New types must be added here first — that is the guard working, not a bug, but the create form could not previously grant it."
+                  : "Content types are free text: a type exists the moment a node names it. Create a vocabulary named “type” with kind “categories” to lock the list down."}
+              </p>
+              <div class="mb-3 flex flex-wrap gap-1.5">
+                ${(types.types || []).map((ty) => html`
+                  <span key=${ty.type} class="rounded-full bg-chip px-2.5 py-0.5 text-[12px]">
+                    ${ty.type}<span class="ml-1 tabular-nums text-[.8em] opacity-60">${ty.count}</span>
+                  </span>`)}
+              </div>
+              ${types.policy === "controlled" && html`
+                <form class="flex gap-2" onSubmit=${addType}>
+                  <input name="newtype" class=${inputCls + " min-w-0 flex-1"} placeholder="supercool" />
+                  <button type="submit" class="shrink-0 rounded-lg bg-ember px-3 py-2 text-[13px] font-semibold text-ground transition hover:brightness-110">Allow it</button>
+                </form>`}
+            <//>
+
+            <${Panel} title="Vocabularies">
+              <p class="m-0 mb-3 max-w-[62ch] text-[12px] leading-5 text-dim">
+                <b class="text-ink">tags</b> are free — an agent invents terms as it files.${" "}
+                <b class="text-ink">categories</b> are controlled — an unknown term is refused, which
+                is what stops a model producing <code class="font-mono">mcp</code>,${" "}
+                <code class="font-mono">MCP</code> and${" "}
+                <code class="font-mono">model-context-protocol</code>${" "}
+                for one idea. Deleting a vocabulary is the way back to free text, and it takes every
+                term and tag assignment with it.
+              </p>
+              <table class="w-full border-collapse text-[13px]">
+                <tbody>
+                  ${vocabs.map((v) => html`
+                    <tr key=${v.id ?? v.name} class="border-b border-line last:border-0">
+                      <td class="py-2 font-semibold">${v.name}</td>
+                      <td class="py-2 text-dim">${v.kind === "categories" ? "categories (controlled)" : "tags (free)"}</td>
+                      <td class="py-2 text-right">
+                        <button type="button" onClick=${() => dropVocabulary(v.name)}
+                                class="rounded-md px-2 py-0.5 text-[12px] text-dim transition hover:text-clay">delete</button>
+                      </td>
+                    </tr>`)}
+                </tbody>
+              </table>
+              <div class=${msgCls(setMsg) + " mt-3"}>${setMsg?.text || ""}</div>
+            <//>
+
+            ${health && health.auth !== "none" && html`
+              <${Panel} title="Lock">
+                <p class="m-0 mb-3 text-[12px] leading-5 text-dim">
+                  ${lockInfo && lockInfo.stored
+                    ? "Using a passphrase you set here. The deployed OWNER_PASSPHRASE still works as a recovery path."
+                    : "Using the deployed OWNER_PASSPHRASE secret. Set your own below — the deployed one keeps working, so forgetting yours is not losing the corpus."}
+                </p>
+                <form class="grid max-w-sm gap-3" onSubmit=${changeLock}>
+                  <${Field} label="new passphrase (min ${(lockInfo && lockInfo.min_length) || 8})">
+                    <input name="nxt" type="password" class=${inputCls + " w-full"} required autocomplete="new-password" />
+                  <//>
+                  <${Field} label="current passphrase — optional, you are already signed in">
+                    <input name="cur" type="password" class=${inputCls + " w-full"} autocomplete="current-password" />
+                  <//>
+                  <div class="flex gap-2">
+                    <button type="submit" class="rounded-lg bg-ember px-3 py-2 text-[13px] font-semibold text-ground transition hover:brightness-110">Change the lock</button>
+                    ${lockInfo && lockInfo.stored && html`
+                      <button type="button" onClick=${revertLock}
+                              class="rounded-lg border border-line px-3 py-2 text-[12px] text-dim transition hover:border-clay/60 hover:text-clay">
+                        Revert to the deployed secret
+                      </button>`}
+                  </div>
+                  <p class="m-0 text-[11px] leading-5 text-dim">Changing it signs out every other browser. This one stays in.</p>
+                  <div class=${msgCls(lockMsg)}>${lockMsg?.text || ""}</div>
+                </form>
+              <//>`}
+          ` : view === "timeline" ? html`
             <${Panel} title="Timeline">
               ${!events ? html`<${Empty}>Reading…<//>`
                 : events.length === 0 ? html`<${Empty}>Nothing has happened yet.<//>`

@@ -135,6 +135,19 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "vocabulary_delete",
+    description:
+      "Delete a vocabulary, and with it every term in it and every tag assignment those terms carried. This is the escape hatch the controlled-vocabulary errors point at: deleting the \"type\" vocabulary returns content types to free text. Refuses unless force=true when terms would be lost, and reports exactly what would go — the cascade is silent in SQLite and 'delete the vocabulary' reads much cheaper than what it actually does.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        force: { type: "boolean", description: "Required once the vocabulary has terms." },
+      },
+      required: ["name"],
+    },
+  },
+  {
     name: "node_search",
     description:
       "Search title and body. mode='text' (DEFAULT) is a trigram index — it matches inside Thai words and is the right choice for finding something you half-remember. mode='semantic' embeds the query and ranks by meaning — use it when your words are a DESCRIPTION of the thing rather than a quote from it. mode='hybrid' merges both and is opt-in for a reason: measured on this fleet's own corpus it scored WORSE than pure text for known-item retrieval (0.44 vs 0.77 MRR), because equal-weight fusion lets a confident-but-wrong neighbour list drag down a confident-and-right lexical one. Every response reports the mode that actually ran and, for semantic, how much of the corpus is embedded.",
@@ -423,6 +436,10 @@ async function runTool(
     }
     case "vocabulary_create":
       return await db.createVocabulary(store, args as any);
+    case "vocabulary_delete": {
+      const gone = await db.deleteVocabulary(store, String(args.name), Boolean(args.force));
+      return { deleted: args.name, ...gone };
+    }
     case "vocabulary_list":
       return { vocabularies: await db.listVocabularies(store) };
     case "term_create":

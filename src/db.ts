@@ -671,3 +671,52 @@ export async function timeline(store: Store, limit = 80): Promise<TimelineEvent[
     duration_ms: r.duration_ms == null ? null : Number(r.duration_ms),
   }));
 }
+
+
+export interface VocabularyImpact {
+  terms: number;
+  assignments: number;
+}
+
+/** What deleting this vocabulary would take with it. Reported before, not after. */
+export async function vocabularyImpact(store: Store, name: string): Promise<VocabularyImpact | null> {
+  const vocabulary = await store.first<VocabularyRow>(VOCABULARIES.byName, [name]);
+  if (!vocabulary) return null;
+  const row = await store.first<{ terms: number; assignments: number }>(VOCABULARIES.impact, [
+    vocabulary.id,
+  ]);
+  return { terms: Number(row?.terms ?? 0), assignments: Number(row?.assignments ?? 0) };
+}
+
+/**
+ * The escape hatch the error messages have been promising.
+ *
+ * `assertTypeAllowed` tells a caller to "delete the controlled type vocabulary
+ * to allow free text", and until now nothing in this codebase could do that —
+ * the advice named an operation that did not exist, so the only real way out was
+ * raw SQL against D1. That is the kind of gap a reader only finds by trying to
+ * follow their own error message.
+ *
+ * Refuses by default when terms would be lost. Cascades are silent by design in
+ * SQLite, and "delete the vocabulary" reads much cheaper than "delete every tag
+ * anyone ever applied from it", which is what it actually means.
+ */
+export async function deleteVocabulary(
+  store: Store,
+  name: string,
+  force = false,
+): Promise<VocabularyImpact> {
+  const vocabulary = await store.first<VocabularyRow>(VOCABULARIES.byName, [name]);
+  if (!vocabulary) throw new Error(`no vocabulary named "${name}"`);
+
+  const impact = (await vocabularyImpact(store, name))!;
+  if (!force && (impact.terms > 0 || impact.assignments > 0)) {
+    throw new Error(
+      `deleting "${name}" would also delete ${impact.terms} term(s) and ${impact.assignments} tag assignment(s). ` +
+        `Pass force to confirm.`,
+    );
+  }
+
+  await store.run(VOCABULARIES.delete, [vocabulary.id]);
+  return impact;
+}

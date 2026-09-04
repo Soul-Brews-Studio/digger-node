@@ -88,6 +88,22 @@ export function createApp({
       .options("/*", () => new Response(null, { status: 204 }))
 
       /**
+       * An empty body is an empty object, not a parse error.
+       *
+       * A DELETE sent with `content-type: application/json` and no body — which
+       * curl does the moment you reuse a header array, and which several HTTP
+       * clients do by default — otherwise fails with
+       * `Unexpected end of JSON input`. That names the parser's problem rather
+       * than the caller's, and points nowhere near the DELETE that caused it.
+       * Measured here while testing the vocabulary escape hatch.
+       */
+      .onParse(async ({ request }, contentType) => {
+        if (!contentType?.startsWith("application/json")) return;
+        const text = await request.text();
+        return text.trim() ? JSON.parse(text) : {};
+      })
+
+      /**
        * The gate, the OAuth endpoints and the browser login, in one `.use()`.
        *
        * Mounted BEFORE the corpus routes below, because its `onBeforeHandle` is
@@ -211,6 +227,36 @@ export function createApp({
       })
 
       .get("/api/vocabularies", async () => ({ vocabularies: await db.listVocabularies(store) }))
+
+      /** What deleting this vocabulary would cost, before deciding to. */
+      .get("/api/vocabularies/:name/impact", async ({ params, set }) => {
+        const impact = await db.vocabularyImpact(store, params.name);
+        if (!impact) {
+          set.status = 404;
+          return { error: "not_found", message: `no vocabulary named "${params.name}"` };
+        }
+        return impact;
+      })
+
+      /**
+       * The escape hatch every "controlled vocabulary" error has been promising.
+       *
+       * `assertTypeAllowed` tells callers to "delete the controlled type
+       * vocabulary to allow free text" — advice that named an operation this
+       * codebase did not have, so the only real way out was raw SQL. Deleting is
+       * refused unless `?force=1` when terms would go with it, because the
+       * cascade is silent and "delete the vocabulary" reads far cheaper than
+       * "delete every tag anyone applied from it".
+       */
+      .delete("/api/vocabularies/:name", async ({ params, query, set }) => {
+        try {
+          const gone = await db.deleteVocabulary(store, params.name, query.force === "1" || query.force === "true");
+          return { deleted: params.name, ...gone };
+        } catch (error) {
+          set.status = error instanceof Error && error.message.startsWith("no vocabulary") ? 404 : 409;
+          return { error: "refused", message: error instanceof Error ? error.message : "failed" };
+        }
+      })
 
       .get("/api/terms", async ({ query }) => ({
         terms: await db.listTerms(store, query.vocabulary),

@@ -801,6 +801,69 @@ describe("tagging is the model's job", () => {
     expect(data.nodes.map((n: any) => n.title)).toContain("for the agent");
   });
 
+  /**
+   * The escape hatch the error messages had been promising and the codebase did
+   * not have: assertTypeAllowed says "delete the controlled type vocabulary to
+   * allow free text", and until this shipped, nothing could.
+   */
+  test("a controlled type can be granted, which is what the UI button does", async () => {
+    await call("vocabulary_create", { name: "type", kind: "categories" });
+    await call("term_create", { vocabulary: "type", name: "note" });
+
+    const refused = await call("node_create", { title: "x", type: "supercool" });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('"supercool" is not an allowed content type');
+
+    await call("term_create", { vocabulary: "type", name: "supercool" });
+    const created = await call("node_create", { title: "x", type: "supercool" });
+    expect(created.isError).toBe(false);
+    expect(created.data.type).toBe("supercool");
+  });
+
+  test("deleting a vocabulary reports what it would cost before doing it", async () => {
+    await call("vocabulary_create", { name: "type", kind: "categories" });
+    await call("term_create", { vocabulary: "type", name: "note" });
+
+    const refused = await call("vocabulary_delete", { name: "type" });
+    expect(refused.isError).toBe(true);
+    // The cascade is silent in SQLite; "delete the vocabulary" reads far cheaper
+    // than what it actually does, so the count comes first.
+    expect(refused.text).toContain("1 term(s)");
+    expect(refused.text).toContain("Pass force");
+
+    const gone = await call("vocabulary_delete", { name: "type", force: true });
+    expect(gone.isError).toBe(false);
+    expect(gone.data).toEqual({ deleted: "type", terms: 1, assignments: 0 });
+
+    // And content types are free text again — the promise the error made.
+    const policy = await call("node_types", {});
+    expect(policy.data.policy).toBe("free");
+  });
+
+  test("deleting a vocabulary takes its tag assignments, and says so", async () => {
+    await call("vocabulary_create", { name: "topics", kind: "tags" });
+    const node = (await call("node_create", { title: "tagged", terms: ["topics:mcp"] })).data;
+    expect(node.terms.length).toBe(1);
+
+    const gone = await call("vocabulary_delete", { name: "topics", force: true });
+    expect(gone.data.assignments).toBe(1);
+    const after = await call("node_get", { id: node.id });
+    expect(after.data.terms).toEqual([]);
+  });
+
+  test("an empty JSON body is an empty object, not a parse error", async () => {
+    // curl sends content-type on a bodyless DELETE the moment you reuse a header
+    // array, and the failure named the parser rather than the caller.
+    const response = await app.fetch(
+      new Request("http://localhost/api/nodes/node_nope", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(response.status).toBe(404);
+    expect(((await response.json()) as any).error).toBe("not_found");
+  });
+
   test("the create form does not ask a human for tags", async () => {
     const { page } = await import("../src/page");
     const html = page("x");

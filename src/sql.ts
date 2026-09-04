@@ -51,6 +51,23 @@ export const VOCABULARIES = {
   byId: `SELECT * FROM vocabularies WHERE id = ?`,
   byName: `SELECT * FROM vocabularies WHERE name = ?`,
   list: `SELECT * FROM vocabularies ORDER BY name`,
+
+  /**
+   * What a delete would destroy, so it can be reported BEFORE it happens.
+   *
+   * `terms.vocabulary_id` and `node_terms.term_id` both cascade (0001_init.sql),
+   * so removing a vocabulary silently takes every term in it and every tag
+   * assignment those terms carried. That is a lot of work to lose to a typo.
+   * args: vocabularyId
+   */
+  impact: `SELECT
+             (SELECT COUNT(*) FROM terms WHERE vocabulary_id = ?1) AS terms,
+             (SELECT COUNT(*) FROM node_terms nt
+                JOIN terms t ON t.id = nt.term_id
+               WHERE t.vocabulary_id = ?1) AS assignments`,
+
+  // args: vocabularyId
+  delete: `DELETE FROM vocabularies WHERE id = ?`,
 } as const;
 
 export const TERMS = {
