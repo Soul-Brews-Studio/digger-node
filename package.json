@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A Drupal-shaped content store — title, body, datetime, taxonomy — served to models over MCP from one Cloudflare Worker.",
+  "description": "A Drupal-shaped content store \u2014 title, body, datetime, taxonomy \u2014 served to models over MCP from one Cloudflare Worker.",
   "scripts": {
     "dev": "wrangler dev",
-    "test": "bun test",
+    "test": "bun test ./test",
     "typecheck": "tsc --noEmit",
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",

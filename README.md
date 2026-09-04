@@ -380,11 +380,21 @@ is why tag clouds have always used log.
 
 ```bash
 bun install
-bun test              # 61 tests, in-memory SQLite, no wrangler needed
+bun run test          # 110 tests, in-memory SQLite, no wrangler needed
 bun run typecheck
 bun run db:local      # apply migrations to the local D1
 bun run dev           # wrangler dev
 ```
+
+> **Run `bun run test`, not bare `bun test`.** The script is pinned to
+> `bun test ./test` for a reason. Bun's default test discovery walks the whole
+> repo root, and if anything there resolves into a large or symlinked tree — a
+> symlink to a notes vault, a sibling checkout — discovery can match **zero**
+> files and still **exit 0**. Measured here: a `ψ` symlink at the root turned
+> `bun test` into a silent no-op printing only its version banner, while
+> `bun test ./test/app.test.ts` ran 63 tests from the same working directory.
+> A green exit code with nothing run is worse than a red one, so the path is
+> explicit and does not depend on what else is lying around.
 
 ## Two things worth knowing
 
