@@ -283,13 +283,48 @@ not to have worked, thirty seconds after a redeploy, has probably worked.
 | `GET /api/types` | Content types in use + whether the guard is on |
 | `GET /api/tools` `/api/stats` | Tool catalogue, corpus shape |
 | `GET /api/clients` `DELETE /api/clients/:id` | Who holds OAuth access; revoke one |
-| `GET /.well-known/oauth-*` `/openid-configuration` | OAuth discovery — always public |
 | `POST /oauth/register` `/oauth/token` `GET,POST /authorize` | The OAuth flow |
 | `POST /login` `POST /logout` | The browser's cookie session |
 
 Everything except `/health`, `/`, the discovery documents and the OAuth flow
 itself is behind the gate once a secret is set. The allow-list is one `Set` in
 `src/auth-plugin.ts` — a route added later is protected by default.
+
+### The four discovery documents, and why there are four
+
+Always public, even with OAuth switched off — a client that fetches these on an
+open server learns the endpoints exist and then gets a 200 from `/mcp` without a
+token, which is the truth. Hiding them when unconfigured would make "is OAuth
+available here?" unanswerable.
+
+They are not variants of one document. The first two answer questions asked by
+**different roles**, and this Worker happens to be both roles at once:
+
+| Route | Spec | Answers |
+|---|---|---|
+| `GET /.well-known/oauth-protected-resource/mcp` | RFC 9728 | *"I am guarded — here is who guards me."* The **first** thing a client fetches, having been pointed at it by the 401's `WWW-Authenticate` header. |
+| `GET /.well-known/oauth-protected-resource` | RFC 9728 | The same document at the bare path. See the note below — this one is a hedge, not a requirement. |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 | *"I issue tokens — here are my endpoints."* Where `/authorize`, `/oauth/token` and `/oauth/register` are named, and where PKCE support is advertised. |
+| `GET /.well-known/openid-configuration` | OpenID Connect Discovery 1.0 | Byte-identical to the RFC 8414 document. **This server is not an OpenID provider.** |
+
+**Why an OAuth server answers at an `openid` path.** OpenID Connect shipped a
+discovery endpoint in 2014; OAuth did not standardise its own until RFC 8414 in
+2018, which deliberately chose a *different* name so that an authorization server
+which is not an OpenID provider does not advertise itself as one. By then every
+client already spoke the OIDC path, so it never died. A compliant MCP client
+tries RFC 8414 first, falls back to the OIDC name, and **stops looking if both
+404** — so serving the same bytes twice is insurance against a discovery chain
+that dead-ends, and costs one route.
+
+**Why the bare `oauth-protected-resource` path is a hedge.** RFC 9728 inserts the
+well-known segment *between* host and path: for a resource at `https://host/mcp`
+the correct metadata URL is `https://host/.well-known/oauth-protected-resource/mcp`.
+The bare form is correct only for a resource at the origin **root** — and the
+document served there names `/mcp`, which at that URL is slightly untrue. It is
+served because clients probe it anyway, and it is safe because RFC 9728 requires
+the client to check that `resource` matches what it asked for: a client wanting
+`/mcp` is helped, and one wanting the root correctly rejects it. If it never
+fires, it should go.
 
 ## The web UI
 
