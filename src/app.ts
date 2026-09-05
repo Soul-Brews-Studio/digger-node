@@ -20,6 +20,7 @@ import { handleMcp, resolveTermRefs, TOOLS } from "./mcp";
 import { page } from "./page";
 import { readStored } from "./passphrase";
 import { loginPage } from "./screens";
+import * as connections from "./connections";
 import { ingressBase } from "./utils";
 import type { Embedder } from "./embed";
 import type { Store } from "./store/types";
@@ -272,6 +273,22 @@ export function createApp({
       }))
 
       .get("/api/calls/stats", async () => ({ tools: await db.callStats(store) }))
+
+      /**
+       * Who is connected. The Access panel's top half.
+       *
+       * `since` narrows the window; `claude_ai` is computed over ALL time
+       * regardless, because "has claude.ai ever connected" and "did it call in
+       * the last day" are different questions and the panel asks the first.
+       */
+      .get("/api/connections", async ({ query }) => {
+        const since = connections.parseSince(query.since ? String(query.since) : null);
+        return {
+          since,
+          connections: await connections.list(store, since),
+          claude_ai: await connections.claudeAiState(store),
+        };
+      })
 
       // Taxonomy writes, so the UI can manage vocabularies and terms without
       // dropping to MCP. Same functions the tools call — one implementation.

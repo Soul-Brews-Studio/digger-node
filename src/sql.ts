@@ -443,3 +443,35 @@ export function listCallsSql(where: string[]): string {
           ORDER BY called_at DESC, rowid DESC
           LIMIT ?`;
 }
+
+/**
+ * The connections ledger — a projection of the request stream, not a log.
+ *
+ * The UPSERT is the whole design: counters ADD, last_* values REPLACE, and
+ * first_seen is kept by simply not being in the update list. One statement per
+ * request, and the row is the caller rather than the call.
+ */
+export const CONNECTIONS = {
+  // args: id, method, principal, label, userAgent, remoteIp,
+  //       firstSeen, lastSeen, requests, toolCalls, lastTool
+  upsert: `INSERT INTO connections
+             (id, method, principal, label, user_agent, remote_ip,
+              first_seen, last_seen, requests, tool_calls, last_tool)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             label      = excluded.label,
+             user_agent = excluded.user_agent,
+             remote_ip  = excluded.remote_ip,
+             last_seen  = excluded.last_seen,
+             requests   = requests + excluded.requests,
+             tool_calls = tool_calls + excluded.tool_calls,
+             last_tool  = COALESCE(excluded.last_tool, last_tool)`,
+
+  // The empty-string cutoff means "everything": passing it twice lets one
+  // statement serve both the windowed and the unwindowed read, rather than
+  // building SQL by concatenation.
+  // args: cutoff, cutoff
+  list: `SELECT * FROM connections
+          WHERE ?1 = '' OR last_seen >= ?2
+          ORDER BY last_seen DESC`,
+} as const;

@@ -192,6 +192,24 @@ export function fromIngress(request: Request): boolean {
   return isHassioBridge(peer);
 }
 
+/**
+ * The caller's address, whichever runtime this is.
+ *
+ * `cf-connecting-ip` on a Worker; the socket address that server.ts stamped
+ * when self-hosted. Neither exists in `bun test`, hence null rather than a
+ * placeholder — a ledger row reading "local" for every caller answers the
+ * question wrongly, and null renders as "—".
+ *
+ * Distinct from ratelimit's clientIp(), which needs a non-null bucket key and
+ * so falls back to a constant. Here the honest answer is "not known".
+ */
+export function remoteAddress(request: Request): string | null {
+  const cf = request.headers.get("cf-connecting-ip")?.trim();
+  if (cf) return cf;
+  const peer = request.headers.get(PEER_IP_HEADER)?.trim();
+  return peer || null;
+}
+
 /** 172.30.32.0/23 — the docker network Supervisor puts add-ons and core on. */
 export function isHassioBridge(ip: string): boolean {
   // ::ffff:172.30.32.1 is how a dual-stack listener reports a v4 peer.

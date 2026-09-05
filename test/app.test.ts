@@ -9,14 +9,20 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { createApp } from "../src/app";
 import { openSqliteStore } from "../src/store/sqlite";
 import type { Store } from "../src/store/types";
 
-const MIGRATION_FILES = ["0001_init.sql", "0002_embeddings.sql", "0003_oauth.sql", "0004_oauth_hashed.sql", "0005_rate_limit.sql", "0006_settings.sql"];
+// Read from disk, not hardcoded: a list in the test file means every new
+// migration needs a test edit, and forgetting one makes the suite green
+// against a schema production does not have. 0007 was added and five
+// tests failed with "undefined" before this changed.
+const MIGRATION_FILES = readdirSync(join(import.meta.dir, "..", "migrations"))
+  .filter((f) => f.endsWith(".sql"))
+  .sort();
 // Name + SQL, the shape a real deployment uses, so the ledger is exercised here
 // rather than only in production.
 const migrationFiles = MIGRATION_FILES.map((file) => ({

@@ -249,11 +249,43 @@ function App() {
   const [lockInfo, setLockInfo] = useState(null);
   const [vocabs, setVocabs] = useState([]);
   const [setMsg, setSetMsg] = useState(null);
+  const [access, setAccess] = useState(null);
+  const [clients, setClients] = useState(null);
+  const [since, setSince] = useState("24h");
+  const [accessMsg, setAccessMsg] = useState(null);
 
   const selected = useMemo(() => new Set(route.terms || []), [route.terms]);
   // Settings is configuration, not a third view of the corpus — so it is a route
   // of its own rather than a third segment in the content/timeline toggle.
   const settingsOpen = route.kind === "settings";
+
+  // Access is loaded only when the settings route is open, and re-loaded when
+  // the window changes. Polling it from the main view would make the ledger
+  // count its own page as a caller, over and over.
+  const loadAccess = useCallback(async () => {
+    const [a, c] = await Promise.all([
+      j("/api/connections?since=" + since).catch(() => null),
+      j("/api/clients").catch(() => ({ clients: [] })),
+    ]);
+    setAccess(a);
+    setClients((c && c.clients) || []);
+  }, [since]);
+
+  useEffect(() => { if (settingsOpen) loadAccess(); }, [settingsOpen, loadAccess]);
+
+  // Revoking is destructive and irreversible for that client — it must re-run
+  // the whole consent flow — so it asks first and names what it is cutting off.
+  const revokeClient = async (id, name) => {
+    if (!confirm("Revoke " + (name || id) + "?" + NL + NL +
+                 "Its tokens stop working on the next request. It can reconnect only by going through consent again.")) return;
+    try {
+      await j("/api/clients/" + encodeURIComponent(id), { method: "DELETE" });
+      setAccessMsg({ kind: "ok", text: "Revoked " + (name || id) + "." });
+      await loadAccess();
+    } catch (e) {
+      setAccessMsg({ kind: "err", text: e.message });
+    }
+  };
 
   useEffect(() => {
     const onHash = () => setRoute(readRoute());
@@ -703,6 +735,89 @@ function App() {
                   <div class=${msgCls(lockMsg)}>${lockMsg?.text || ""}</div>
                 </form>
               <//>`}
+
+            <${Panel} title="Access">
+              <p class="m-0 mb-4 max-w-[62ch] text-[12px] leading-5 text-dim">
+                Who can reach this corpus. The top half is <b class="text-ink">who has actually
+                called in</b> — counted from requests that passed the gate, so a client holding a
+                token it never uses does not appear here. The bottom half is every OAuth client that
+                ever registered; revoking one takes effect on its next request.
+              </p>
+
+              ${access && html`
+                <div class="mb-3 flex flex-wrap items-center gap-2 text-[12px]">
+                  <span class=${"rounded-full px-2.5 py-0.5 font-semibold " + (
+                    access.claude_ai === "connected" ? "bg-sage/20 text-sage"
+                      : access.claude_ai === "idle" ? "bg-ember/20 text-ember"
+                      : "bg-chip text-dim")}>
+                    claude.ai · ${access.claude_ai === "connected" ? "connected"
+                      : access.claude_ai === "idle" ? "has a token, quiet" : "never connected"}
+                  </span>
+                  <span class="text-dim">${(access.connections || []).length} caller${(access.connections || []).length === 1 ? "" : "s"}</span>
+                  <span class="ml-auto flex gap-1">
+                    ${["24h", "7d", "all"].map((w) => html`
+                      <button key=${w} type="button" onClick=${() => setSince(w)}
+                              class=${"rounded-md border px-2 py-0.5 transition " + (
+                                since === w ? "border-ember/60 text-ember" : "border-line text-dim hover:text-ember")}>
+                        ${w}
+                      </button>`)}
+                  </span>
+                </div>`}
+
+              ${!access ? html`<${Empty}>Reading…<//>`
+                : (access.connections || []).length === 0
+                  ? html`<${Empty}>Nothing has called in during this window.<//>`
+                  : html`
+                    <table class="w-full border-collapse text-[13px]">
+                      <tbody>
+                        ${access.connections.map((c) => html`
+                          <tr key=${c.id} class="border-b border-line align-top last:border-0">
+                            <td class="py-2 pr-3">
+                              <span class="font-semibold">${c.label}</span>
+                              <span class="ml-2 font-mono text-[11px] text-dim">${c.method}</span>
+                              ${c.remoteIp && html`<span class="ml-2 font-mono text-[11px] text-dim">${c.remoteIp}</span>`}
+                            </td>
+                            <td class="py-2 pr-3 tabular-nums text-[12px] text-dim">${when(c.lastSeen)}</td>
+                            <td class="py-2 pr-3 tabular-nums text-[12px] text-dim">
+                              ${c.requests} req
+                              <span class="ml-2">${c.toolCalls} tool</span>
+                            </td>
+                            <td class="py-2 text-right font-mono text-[11px] text-dim">${c.lastTool || ""}</td>
+                          </tr>`)}
+                      </tbody>
+                    </table>`}
+
+              <h3 class="mb-2 mt-6 text-[11px] font-semibold uppercase tracking-[.08em] text-dim">OAuth clients</h3>
+              ${!clients ? html`<${Empty}>Reading…<//>`
+                : clients.length === 0
+                  ? html`<${Empty}>No client has ever registered. claude.ai registers itself the first time you connect it.<//>`
+                  : html`
+                    <table class="w-full border-collapse text-[13px]">
+                      <tbody>
+                        ${clients.map((c) => html`
+                          <tr key=${c.client_id} class="border-b border-line align-top last:border-0">
+                            <td class="py-2 pr-3">
+                              <span class="font-semibold">${c.client_name || "unnamed"}</span>
+                              <div class="font-mono text-[11px] text-dim">${c.client_id}</div>
+                            </td>
+                            <td class="py-2 pr-3 text-[12px] text-dim">
+                              <span class=${(c.active_tokens > 0 ? "text-sage" : "")}>${c.active_tokens ?? 0} live token${c.active_tokens === 1 ? "" : "s"}</span>
+                              <div class="tabular-nums">first ${when(c.created_at)}</div>
+                            </td>
+                            <td class="py-2 pr-3 text-[12px] text-dim">
+                              ${c.last_token_at
+                                ? html`last token ${when(c.last_token_at)}`
+                                : html`<span class="opacity-70">never issued a token</span>`}
+                            </td>
+                            <td class="py-2 text-right">
+                              <button type="button" onClick=${() => revokeClient(c.client_id, c.client_name)}
+                                      class="rounded-md px-2 py-0.5 text-[12px] text-dim transition hover:text-clay">revoke</button>
+                            </td>
+                          </tr>`)}
+                      </tbody>
+                    </table>`}
+              <div class=${msgCls(accessMsg) + " mt-3"}>${accessMsg?.text || ""}</div>
+            <//>
           ` : view === "timeline" ? html`
             <${Panel} title="Timeline">
               ${!events ? html`<${Empty}>Reading…<//>`

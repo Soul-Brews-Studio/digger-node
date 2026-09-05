@@ -30,11 +30,12 @@ import { Elysia } from "elysia";
 import { authenticate, authEnabled, unauthorized, type AuthConfig } from "./auth";
 import * as oauth from "./oauth";
 import { checkOwner, clearPassphrase, MIN_PASSPHRASE, readStored, setPassphrase } from "./passphrase";
+import { countable, record } from "./connections";
 import { clientIp, recordFailure, recordSuccess, retryAfter, tooManyAttempts } from "./ratelimit";
 import { approvalPage, loginPage } from "./screens";
 import { clearedSessionCookie, issueSession, sessionCookie } from "./session";
 import type { Store } from "./store/types";
-import { ingressBase, timingSafeEqual } from "./utils";
+import { ingressBase, remoteAddress, timingSafeEqual } from "./utils";
 
 export interface AuthPluginOptions {
   store: Store;
@@ -152,6 +153,16 @@ export function authPlugin({
         // 401 a browser cannot read teaches a client nothing — this particular
         // 401 is the first step of the OAuth flow.
         if (!result.ok) return unauthorized(origin(request));
+
+        // Fold the caller into the ledger. Awaited rather than fired and
+        // forgotten: on a Worker the isolate can be torn down the moment the
+        // response is returned, so a floating promise here would drop counts on
+        // exactly the deployment that is visible from the internet. record()
+        // swallows its own errors, so this cannot fail a request that the gate
+        // has already allowed.
+        if (countable(pathname)) {
+          await record(store, result, request, remoteAddress(request));
+        }
       })
 
       // ── discovery ──────────────────────────────────────────────────────────

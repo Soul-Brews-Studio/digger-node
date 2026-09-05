@@ -14,7 +14,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { createApp } from "../src/app";
@@ -23,9 +23,11 @@ import type { Store } from "../src/store/types";
 import { lockoutSeconds } from "../src/ratelimit";
 import { sha256Base64Url } from "../src/utils";
 
-const migrations = ["0001_init.sql", "0002_embeddings.sql", "0003_oauth.sql", "0004_oauth_hashed.sql", "0005_rate_limit.sql", "0006_settings.sql"].map((file) =>
-  readFileSync(join(import.meta.dir, "..", "migrations", file), "utf8"),
-);
+// Read from disk, not hardcoded — see the note in app.test.ts.
+const migrations = readdirSync(join(import.meta.dir, "..", "migrations"))
+  .filter((f) => f.endsWith(".sql"))
+  .sort()
+  .map((file) => ({ name: file, sql: readFileSync(join(import.meta.dir, "..", "migrations", file), "utf8") }));
 
 const PASSPHRASE = "open-sesame-please";
 const API_TOKEN = "static-token-for-scripts";
@@ -1211,5 +1213,104 @@ describe("ingress auto-login", () => {
     const app = appWith({ ownerPassphrase: PASSPHRASE, apiToken: API_TOKEN, ingressAutoLogin: true });
     const health = await app.fetch(new Request("http://localhost/health"));
     expect(((await health.json()) as any).auth).toContain("ingress");
+  });
+});
+
+/**
+ * The connections ledger — "who is connected, and is claude.ai among them?"
+ *
+ * The distinction that earns this its own suite: Claude Code can also arrive
+ * over OAuth, so labelling every OAuth client "claude.ai" would answer the
+ * question wrongly in exactly the case worth asking about. The label follows
+ * the REGISTERED redirect_uri, not the transport.
+ */
+describe("connections ledger", () => {
+  const get = async (app: ReturnType<typeof createApp>, token: string, path: string, ua?: string) =>
+    app.fetch(
+      new Request(`http://localhost${path}`, {
+        headers: { authorization: `Bearer ${token}`, ...(ua ? { "user-agent": ua } : {}) },
+      }),
+    );
+
+  const readLedger = async (app: ReturnType<typeof createApp>) => {
+    const response = await app.fetch(
+      new Request("http://localhost/api/connections?since=all", {
+        headers: { authorization: `Bearer ${API_TOKEN}` },
+      }),
+    );
+    return (await response.json()) as any;
+  };
+
+  test("a static-token caller is identified by its user-agent family", async () => {
+    const app = appWith({ apiToken: API_TOKEN });
+    await get(app, API_TOKEN, "/api/nodes", "claude-code/1.2 (darwin)");
+    const body = await readLedger(app);
+    const row = body.connections.find((c: any) => c.method === "api-token");
+    expect(row.label).toBe("Claude Code");
+    expect(row.requests).toBeGreaterThanOrEqual(1);
+  });
+
+  test("repeat requests fold into ONE row and increment it", async () => {
+    const app = appWith({ apiToken: API_TOKEN });
+    for (let i = 0; i < 3; i++) await get(app, API_TOKEN, "/api/nodes", "curl/8.4.0");
+    const body = await readLedger(app);
+    const rows = body.connections.filter((c: any) => c.label === "curl");
+    expect(rows.length).toBe(1);
+    expect(rows[0].requests).toBeGreaterThanOrEqual(3);
+  });
+
+  test("/health is not a caller and is never counted", async () => {
+    const app = appWith({ apiToken: API_TOKEN });
+    await app.fetch(new Request("http://localhost/health"));
+    const body = await readLedger(app);
+    expect(body.connections.every((c: any) => c.requests > 0)).toBe(true);
+    // the only row is the ledger read itself, never a health probe
+    expect(body.connections.some((c: any) => c.lastTool === "/health")).toBe(false);
+  });
+
+  test("an ingress caller is 'HA sidebar' and carries the bridge address", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE, ingressAutoLogin: true });
+    await app.fetch(
+      new Request("http://localhost/api/nodes", {
+        headers: { "x-ingress-path": "/api/hassio_ingress/t", "x-digger-peer-ip": "172.30.32.2" },
+      }),
+    );
+    const response = await app.fetch(
+      new Request("http://localhost/api/connections?since=all", {
+        headers: { "x-ingress-path": "/api/hassio_ingress/t", "x-digger-peer-ip": "172.30.32.2" },
+      }),
+    );
+    const body = (await response.json()) as any;
+    const row = body.connections.find((c: any) => c.method === "ingress");
+    expect(row.label).toBe("HA sidebar");
+    expect(row.remoteIp).toBe("172.30.32.2");
+  });
+
+  test("claude.ai is recognised by its REGISTERED callback, not by its transport", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE, apiToken: API_TOKEN });
+    const claude = await registerClient(app, ["https://claude.ai/api/mcp/auth_callback"]);
+    const other = await registerClient(app, ["http://localhost:9999/cb"]);
+    const { isClaudeAiClient } = await import("../src/connections");
+    expect(isClaudeAiClient(["https://claude.ai/api/mcp/auth_callback"])).toBe(true);
+    expect(isClaudeAiClient(["https://claude.com/x"])).toBe(true);
+    expect(isClaudeAiClient(["http://localhost:9999/cb"])).toBe(false);
+    // and a host that merely CONTAINS the string is not claude.ai
+    expect(isClaudeAiClient(["https://notclaude.ai.evil.test/cb"])).toBe(false);
+    expect(claude.status).toBe(201);
+    expect(other.status).toBe(201);
+  });
+
+  test("claude_ai reports none until a claude.ai client actually exists", async () => {
+    const app = appWith({ apiToken: API_TOKEN });
+    await get(app, API_TOKEN, "/api/nodes", "curl/8.4.0");
+    const body = await readLedger(app);
+    expect(body.claude_ai).toBe("none");
+  });
+
+  test("the ledger stores no credential", async () => {
+    const app = appWith({ apiToken: API_TOKEN });
+    await get(app, API_TOKEN, "/api/nodes", "claude-code/1.0");
+    const raw = JSON.stringify(await readLedger(app));
+    expect(raw).not.toContain(API_TOKEN);
   });
 });
