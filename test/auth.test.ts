@@ -1245,8 +1245,11 @@ describe("connections ledger", () => {
     const app = appWith({ apiToken: API_TOKEN });
     await get(app, API_TOKEN, "/api/nodes", "claude-code/1.2 (darwin)");
     const body = await readLedger(app);
-    const row = body.connections.find((c: any) => c.method === "api-token");
-    expect(row.label).toBe("Claude Code");
+    // The ledger READ is itself an api-token request, and it carries no
+    // user-agent — so it makes its own `unknown` row and, being newest, sorts
+    // first. Find the row we mean by label rather than by "first of this method".
+    const row = body.connections.find((c: any) => c.label === "Claude Code");
+    expect(row).toBeDefined();
     expect(row.requests).toBeGreaterThanOrEqual(1);
   });
 
@@ -1312,5 +1315,42 @@ describe("connections ledger", () => {
     await get(app, API_TOKEN, "/api/nodes", "claude-code/1.0");
     const raw = JSON.stringify(await readLedger(app));
     expect(raw).not.toContain(API_TOKEN);
+  });
+});
+
+/**
+ * One sidebar, one row — even when the tunnel forwards a different visitor IP.
+ *
+ * Behind Cloudflare, cf-connecting-ip is the END USER's public address. Keying
+ * the ingress row on it minted a new "HA sidebar" row per visitor, which was
+ * seen live as `HA sidebar · ingress · 124.121.144.27` and would have grown the
+ * table without bound.
+ */
+describe("ingress identity survives a tunnel", () => {
+  test("two visitors through the tunnel are ONE HA sidebar row", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE, ingressAutoLogin: true });
+    for (const visitor of ["124.121.144.27", "203.0.113.9"]) {
+      await app.fetch(
+        new Request("http://localhost/api/nodes", {
+          headers: {
+            "x-ingress-path": "/api/hassio_ingress/t",
+            "x-digger-peer-ip": "172.30.32.2",
+            "cf-connecting-ip": visitor,
+          },
+        }),
+      );
+    }
+    const response = await app.fetch(
+      new Request("http://localhost/api/connections?since=all", {
+        headers: { "x-ingress-path": "/api/hassio_ingress/t", "x-digger-peer-ip": "172.30.32.2" },
+      }),
+    );
+    const rows = ((await response.json()) as any).connections.filter((c: any) => c.method === "ingress");
+    // The claim under test: ONE row for two different visitors. remote_ip is
+    // deliberately not asserted — it follows the latest request, and the latest
+    // request is this very read.
+    expect(rows.length).toBe(1);
+    expect(rows[0].principal).toBe("172.30.32.2");
+    expect(rows[0].requests).toBeGreaterThanOrEqual(3);
   });
 });

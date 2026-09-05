@@ -20,7 +20,10 @@
  *   api-token      principal = the user-agent family. One static secret is
  *                  shared by every script, so the UA is the only identity there
  *                  is, and pretending otherwise would invent precision.
- *   ingress        principal = the Supervisor proxy's address; "HA sidebar".
+ *   ingress        principal = the SOCKET peer (always the hassio bridge), so
+ *                  the sidebar is one row however many people open it. The
+ *                  visitor's public address is kept as remote_ip, displayed and
+ *                  never identity — see principalOf().
  *   owner-session  principal = "browser". Every browser tab is the owner.
  *
  * Nothing here stores a credential. The bearer that proved a caller is
@@ -30,7 +33,7 @@
 import { getClient } from "./oauth";
 import { CONNECTIONS } from "./sql";
 import type { Store } from "./store/types";
-import { nowIso } from "./utils";
+import { nowIso, PEER_IP_HEADER } from "./utils";
 
 export type ConnectionMethod = "open" | "owner-session" | "api-token" | "oauth" | "ingress";
 export type Since = "24h" | "7d" | "all";
@@ -126,11 +129,25 @@ async function labelOf(
     : `OAuth · ${name}`;
 }
 
+/**
+ * The stable identity of a caller — the half of the row that must NOT vary per
+ * request, because it is the primary key.
+ *
+ * Ingress is the subtle one. The obvious choice is "the address it came from",
+ * and that was wrong: behind the Cloudflare tunnel `cf-connecting-ip` is the
+ * END USER's public address, so every visitor minted a new "HA sidebar" row and
+ * the table grew without bound. Seen live — a row reading
+ * `HA sidebar · ingress · 124.121.144.27` where a bridge address belonged.
+ *
+ * The sidebar is ONE caller: Home Assistant, proxying for whoever is signed
+ * into it. So the principal is the SOCKET peer (always the hassio bridge), and
+ * the visitor's public address is kept as `remote_ip` — displayed, never
+ * identity. One row, and it still tells you who last opened the panel.
+ */
 function principalOf(
   method: ConnectionMethod,
   clientId: string | undefined,
   request: Request,
-  remoteIp: string | null,
 ): string {
   switch (method) {
     case "oauth":
@@ -138,7 +155,7 @@ function principalOf(
     case "api-token":
       return uaFamily(request.headers.get("user-agent"));
     case "ingress":
-      return remoteIp ?? "ingress";
+      return request.headers.get(PEER_IP_HEADER)?.trim() || "ingress";
     default:
       return "browser";
   }
@@ -164,7 +181,7 @@ export async function record(
   if (!method || method === "open") return;
 
   try {
-    const principal = principalOf(method, auth.clientId, request, remoteIp);
+    const principal = principalOf(method, auth.clientId, request);
     const label = await labelOf(store, method, principal);
     const now = nowIso();
     await store.run(CONNECTIONS.upsert, [
