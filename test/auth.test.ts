@@ -34,7 +34,7 @@ const REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 let store: Store;
 
 /** A fresh app with whatever credentials the test needs. */
-const appWith = (auth: { ownerPassphrase?: string; apiToken?: string }) =>
+const appWith = (auth: { ownerPassphrase?: string; apiToken?: string; ingressAutoLogin?: boolean }) =>
   createApp({ store, instanceName: "test", auth });
 
 const formTo = (path: string, fields: Record<string, string>) =>
@@ -1126,5 +1126,90 @@ describe("the browser session", () => {
     const app = appWith({ ownerPassphrase: PASSPHRASE });
     const response = await app.fetch(formTo("/logout", {}));
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+});
+
+
+/**
+ * Ingress auto-login — and the four ways it must refuse.
+ *
+ * Home Assistant already authenticated whoever is looking at the sidebar panel,
+ * so asking for a passphrase one iframe deeper guards a door that is already
+ * locked. The risk is the mapped port: digger-node publishes 8108 so MCP
+ * clients can reach it, and that port answers anyone on the LAN or the VPN.
+ *
+ * A sibling add-on on this fleet takes the simple route — a flag that mints a
+ * full admin token for anyone who can reach its port — and says so in its own
+ * comments. These tests exist because that trade is avoidable here: the header
+ * says "rendered inside the iframe", the SOURCE ADDRESS says "and it is really
+ * Home Assistant asking", and only both together are enough.
+ */
+describe("ingress auto-login", () => {
+  const PEER = "x-digger-peer-ip";
+  const ingressReq = (headers: Record<string, string>) =>
+    new Request("http://localhost/api/nodes", { headers });
+
+  test("off by default: a perfect ingress request is still refused", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE });
+    const response = await app.fetch(
+      ingressReq({ "x-ingress-path": "/api/hassio_ingress/tok", [PEER]: "172.30.32.1" }),
+    );
+    expect(response.status).toBe(401);
+  });
+
+  test("on: an ingress request from the hassio bridge is let in", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE, ingressAutoLogin: true });
+    const response = await app.fetch(
+      ingressReq({ "x-ingress-path": "/api/hassio_ingress/tok", [PEER]: "172.30.32.1" }),
+    );
+    expect(response.status).toBe(200);
+  });
+
+  test("the header alone proves nothing — anyone can send it", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE, ingressAutoLogin: true });
+    const response = await app.fetch(ingressReq({ "x-ingress-path": "/api/hassio_ingress/tok" }));
+    expect(response.status).toBe(401);
+  });
+
+  test("THE POINT: the same request from the LAN or the VPN is refused", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE, ingressAutoLogin: true });
+    for (const peer of ["100.97.192.167", "192.168.1.50", "10.0.0.4", "172.31.32.1", "172.30.34.1"]) {
+      const response = await app.fetch(
+        ingressReq({ "x-ingress-path": "/api/hassio_ingress/tok", [PEER]: peer }),
+      );
+      expect({ peer, status: response.status }).toEqual({ peer, status: 401 });
+    }
+  });
+
+  test("the bridge address alone is not enough either — both halves required", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE, ingressAutoLogin: true });
+    const response = await app.fetch(ingressReq({ [PEER]: "172.30.32.1" }));
+    expect(response.status).toBe(401);
+  });
+
+  test("172.30.33.x is inside the /23 and 172.30.31.x is not", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE, ingressAutoLogin: true });
+    const inside = await app.fetch(
+      ingressReq({ "x-ingress-path": "/x", [PEER]: "172.30.33.9" }),
+    );
+    expect(inside.status).toBe(200);
+    const outside = await app.fetch(
+      ingressReq({ "x-ingress-path": "/x", [PEER]: "172.30.31.9" }),
+    );
+    expect(outside.status).toBe(401);
+  });
+
+  test("an IPv4-mapped IPv6 peer is still recognised", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE, ingressAutoLogin: true });
+    const response = await app.fetch(
+      ingressReq({ "x-ingress-path": "/x", [PEER]: "::ffff:172.30.32.1" }),
+    );
+    expect(response.status).toBe(200);
+  });
+
+  test("a real credential still wins, so the call log records how they proved it", async () => {
+    const app = appWith({ ownerPassphrase: PASSPHRASE, apiToken: API_TOKEN, ingressAutoLogin: true });
+    const health = await app.fetch(new Request("http://localhost/health"));
+    expect(((await health.json()) as any).auth).toContain("ingress");
   });
 });

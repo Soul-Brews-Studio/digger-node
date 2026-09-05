@@ -25,9 +25,9 @@
 import { SCOPES, verifyBearer } from "./oauth";
 import { SESSION_COOKIE_NAME, verifySession } from "./session";
 import type { Store } from "./store/types";
-import { readCookie, timingSafeEqual } from "./utils";
+import { fromIngress, readCookie, timingSafeEqual } from "./utils";
 
-export type AuthMethod = "open" | "owner-session" | "api-token" | "oauth";
+export type AuthMethod = "open" | "owner-session" | "api-token" | "oauth" | "ingress";
 
 export interface AuthConfig {
   /** Enables OAuth and the web login. Without it there is no way to approve a
@@ -35,6 +35,19 @@ export interface AuthConfig {
   ownerPassphrase?: string;
   /** Enables a static bearer for scripts and local MCP clients. */
   apiToken?: string;
+  /**
+   * Accept Home Assistant's own session in place of the passphrase, for
+   * requests that genuinely arrived through ingress.
+   *
+   * OFF unless the operator turns it on. When on, opening the sidebar panel
+   * signs you in — Home Assistant already asked who you are, and asking again
+   * one iframe deeper is a password prompt guarding a door that is already
+   * locked.
+   *
+   * It never widens the mapped port: see fromIngress() for why the source
+   * address does the work the header cannot.
+   */
+  ingressAutoLogin?: boolean;
 }
 
 export interface AuthResult {
@@ -66,6 +79,9 @@ export function authModes(config: AuthConfig): string[] {
   const modes: string[] = [];
   if (config.apiToken?.trim()) modes.push("api-token");
   if (config.ownerPassphrase?.trim()) modes.push("oauth", "owner-session");
+  // Reported so /health answers "why am I already logged in?" without anyone
+  // having to read the add-on options to find out.
+  if (config.ingressAutoLogin) modes.push("ingress");
   return modes;
 }
 
@@ -119,6 +135,13 @@ export async function authenticate(
   const cookie = readCookie(request.headers.get("cookie"), SESSION_COOKIE_NAME);
   if (await verifySession(sessionKey ?? config.ownerPassphrase, cookie)) {
     return { ok: true, method: "owner-session" };
+  }
+
+  // Last, and only when switched on. Last because a real credential should
+  // always be preferred and should always be what the call log records; a
+  // request that proved itself properly must not be filed as "ingress".
+  if (config.ingressAutoLogin && fromIngress(request)) {
+    return { ok: true, method: "ingress" };
   }
 
   return DENIED;

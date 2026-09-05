@@ -30,6 +30,7 @@ import { join } from "node:path";
 
 import { createApp } from "./app";
 import { openSqliteStore } from "./store/sqlite";
+import { PEER_IP_HEADER } from "./utils";
 
 /**
  * Every migration, in filename order, read at startup.
@@ -67,6 +68,11 @@ const app = createApp({
   auth: {
     ownerPassphrase: process.env.OWNER_PASSPHRASE,
     apiToken: process.env.API_TOKEN,
+    // Off unless explicitly turned on. See fromIngress() in utils.ts for what
+    // it does and does not prove.
+    ingressAutoLogin: ["1", "true", "yes", "on"].includes(
+      (process.env.INGRESS_AUTO_LOGIN ?? "").trim().toLowerCase(),
+    ),
   },
   publicUrl: process.env.PUBLIC_URL,
   rateLimit:
@@ -78,7 +84,28 @@ const app = createApp({
 const port = Number(process.env.PORT ?? 8099);
 const hostname = process.env.HOST ?? "0.0.0.0";
 
-Bun.serve({ port, hostname, fetch: app.fetch });
+Bun.serve({
+  port,
+  hostname,
+  fetch(request, server) {
+    /**
+     * Stamp the socket's address onto the request, and OVERWRITE whatever
+     * arrived under that name.
+     *
+     * This is the only place `PEER_IP_HEADER` is ever written. Without the
+     * overwrite the header would be an ordinary client-supplied string, and
+     * `fromIngress()` — which trusts it to decide that Home Assistant is really
+     * the one asking — would be reading input from the party it is checking.
+     * Deleting first rather than only setting, because a request carrying two
+     * headers of the same name is not a shape worth reasoning about.
+     */
+    const headers = new Headers(request.headers);
+    headers.delete(PEER_IP_HEADER);
+    const peer = server.requestIP(request);
+    if (peer?.address) headers.set(PEER_IP_HEADER, peer.address);
+    return app.fetch(new Request(request, { headers }));
+  },
+});
 
 // One line, and it reports STATE rather than echoing config: the driver and the
 // migration count are what actually happened at startup. A log that repeats the

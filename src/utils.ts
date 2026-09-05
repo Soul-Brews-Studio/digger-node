@@ -157,6 +157,53 @@ export function ingressBase(request: Request): string {
   return raw.replace(/\/+$/, "");
 }
 
+/**
+ * The header a trusted front door writes the peer address into.
+ *
+ * Set by server.ts from the socket, and OVERWRITTEN there unconditionally so a
+ * client cannot supply its own. Nothing outside that one assignment may write
+ * it, which is the only reason anything downstream is allowed to believe it.
+ */
+export const PEER_IP_HEADER = "x-digger-peer-ip";
+
+/**
+ * Did this request come through Home Assistant's ingress, for real?
+ *
+ * `X-Ingress-Path` alone answers nothing — it is one header, and anyone who can
+ * open a socket to the published port can send it. What cannot be forged over
+ * that port is the source address: ingress reaches an add-on from Home
+ * Assistant itself, on the internal `172.30.32.0/23` hassio bridge, while a
+ * request to the mapped port arrives from wherever its client is.
+ *
+ * So both halves are required, and they answer different questions —
+ * the header says "this is being rendered inside the ingress iframe", the
+ * address says "and it really is Home Assistant asking".
+ *
+ * The honest limit: any add-on ALREADY INSTALLED on this host shares that
+ * bridge and can therefore satisfy both. This distinguishes Home Assistant from
+ * the network, not Home Assistant from its co-residents — the admin who
+ * installed those add-ons is the same person this would be logging in. What it
+ * does buy is the thing that actually matters here: reaching the mapped port
+ * from the LAN or the VPN can never be enough.
+ */
+export function fromIngress(request: Request): boolean {
+  if (!request.headers.get("x-ingress-path")) return false;
+  const peer = request.headers.get(PEER_IP_HEADER) ?? "";
+  return isHassioBridge(peer);
+}
+
+/** 172.30.32.0/23 — the docker network Supervisor puts add-ons and core on. */
+export function isHassioBridge(ip: string): boolean {
+  // ::ffff:172.30.32.1 is how a dual-stack listener reports a v4 peer.
+  const v4 = ip.replace(/^::ffff:/i, "");
+  const parts = v4.split(".");
+  if (parts.length !== 4) return false;
+  const octets = parts.map((p) => Number(p));
+  if (octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) return false;
+  // /23 starting at 172.30.32.0 covers 172.30.32.x and 172.30.33.x.
+  return octets[0] === 172 && octets[1] === 30 && (octets[2] === 32 || octets[2] === 33);
+}
+
 /** 'vocabulary:term' → parts. A bare name lands in the default vocabulary. */
 export function parseTermRef(raw: string, defaultVocabulary = "tags"): { vocabulary: string; name: string } | null {
   const value = String(raw ?? "").trim();
