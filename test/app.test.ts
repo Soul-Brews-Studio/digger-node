@@ -949,3 +949,39 @@ describe("migrations are applied once", () => {
     expect(ledger.length).toBe(migrationFiles.length);
   });
 });
+
+/**
+ * The upgrade path: a database written BEFORE the ledger existed.
+ *
+ * Recreated exactly — apply every migration with no bookkeeping, the way the
+ * old code did — then open it with the current code. This is the file that was
+ * sitting on the add-on's /data volume, and re-running 0004 against it is what
+ * took the deployment down.
+ */
+describe("adopting a pre-ledger database", () => {
+  test("an existing schema is adopted, not re-run, and its data survives", async () => {
+    const path = join(
+      process.env.TMPDIR ?? "/tmp",
+      `digger-preledger-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+    );
+    const { Database } = await import("bun:sqlite");
+    const raw = new Database(path);
+    raw.exec("PRAGMA foreign_keys = ON");
+    for (const m of migrationFiles) raw.exec(m.sql);          // old behaviour, no ledger
+    raw
+      .query("INSERT INTO nodes (title, body, type, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run("survivor", "b", "note", new Date().toISOString(), new Date().toISOString());
+    raw.close();
+
+    const store = await openSqliteStore(path, migrationFiles);
+    const rows = await store.all<{ title: string }>("SELECT title FROM nodes", []);
+    expect(rows.map((r) => r.title)).toEqual(["survivor"]);
+
+    const ledger = await store.all<{ name: string }>("SELECT name FROM schema_migrations", []);
+    expect(ledger.length).toBe(migrationFiles.length);
+
+    // And now strict: a third open must not adopt anything again.
+    const again = await openSqliteStore(path, migrationFiles);
+    expect((await again.all("SELECT title FROM nodes", [])).length).toBe(1);
+  });
+});

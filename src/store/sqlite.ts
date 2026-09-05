@@ -119,6 +119,29 @@ export async function openSqliteStore(
     ),
   );
 
+  /**
+   * The upgrade case: a database that predates this ledger.
+   *
+   * Such a file has real tables and an empty ledger, and the strict path would
+   * try to re-run everything and die on 0004 — which is precisely what a
+   * deployed add-on did. Its migrations HAVE been applied; the only thing
+   * missing is the record.
+   *
+   * So the first pass over an already-populated database is tolerant: run each
+   * migration, and if it fails, take that as evidence it was already applied,
+   * record it, and say so. This happens once. Afterwards the ledger is accurate
+   * and every later open is strict, so a genuine error can never be swallowed
+   * twice.
+   *
+   * "Populated" is decided by a table from 0001 rather than by file size, so a
+   * database that exists but was never migrated still gets the strict path.
+   */
+  const preexisting =
+    (database
+      .query("SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'")
+      .get() as { name: string } | undefined | null) != null;
+  const baseline = applied.size === 0 && preexisting;
+
   for (const entry of migrations) {
     // A bare string keeps the old call shape working. Its identity is a hash of
     // its own text, so the same SQL is recognised across runs and edited SQL is
@@ -128,10 +151,33 @@ export async function openSqliteStore(
         ? { name: `sha:${Bun.hash(entry).toString(16)}`, sql: entry }
         : entry;
     if (applied.has(name)) continue;
-    database.exec(sql);
-    database
-      .query("INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)")
-      .run(name, new Date().toISOString());
+
+    const record = () =>
+      database
+        .query("INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)")
+        .run(name, new Date().toISOString());
+
+    // The migration and its bookkeeping commit together or not at all, so a
+    // file that fails halfway can never be left recorded as done — which would
+    // skip it forever and leave the schema permanently half-built.
+    const apply = () => {
+      database.exec(sql);
+      record();
+    };
+
+    try {
+      if (database.transaction) database.transaction(apply)();
+      else apply();
+    } catch (error) {
+      if (!baseline) throw error;
+      // Adopting, not ignoring: this runs only on the one pass that adopts a
+      // pre-ledger database, and the reason is printed rather than hidden.
+      console.log(
+        `[migrations] adopting ${name} as already applied ` +
+          `(${error instanceof Error ? error.message : String(error)})`,
+      );
+      record();
+    }
   }
 
   return sqliteStore(database);
