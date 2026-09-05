@@ -40,16 +40,17 @@ import { PEER_IP_HEADER } from "./utils";
  * adding a migration is dropping in a file — the Worker path applies these
  * through `wrangler d1 migrations apply`, and this is the same list.
  *
- * Applying them on every boot is safe: each file is written to be idempotent
- * (`CREATE TABLE IF NOT EXISTS`, and `0004`'s rename guarded by a check), which
- * is what makes "start the container again" a working recovery step rather than
- * a data-loss event.
+ * The FILENAME travels with the SQL because openSqliteStore keeps a ledger and
+ * runs each migration at most once. That is not belt-and-braces: 0004 renames a
+ * column, so applying it twice fails with `no such column: "code"` — which is
+ * exactly what a restart did before the ledger existed. Fresh databases were
+ * always fine, which is why nothing caught it until the second boot.
  */
-function migrations(dir: string): string[] {
+function migrations(dir: string): Array<{ name: string; sql: string }> {
   return readdirSync(dir)
     .filter((name) => name.endsWith(".sql"))
     .sort()
-    .map((name) => readFileSync(join(dir, name), "utf8"));
+    .map((name) => ({ name, sql: readFileSync(join(dir, name), "utf8") }));
 }
 
 const dbPath = process.env.DB_PATH ?? "./digger.db";

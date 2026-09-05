@@ -16,9 +16,14 @@ import { createApp } from "../src/app";
 import { openSqliteStore } from "../src/store/sqlite";
 import type { Store } from "../src/store/types";
 
-const migrations = ["0001_init.sql", "0002_embeddings.sql", "0003_oauth.sql", "0004_oauth_hashed.sql", "0005_rate_limit.sql", "0006_settings.sql"].map((file) =>
-  readFileSync(join(import.meta.dir, "..", "migrations", file), "utf8"),
-);
+const MIGRATION_FILES = ["0001_init.sql", "0002_embeddings.sql", "0003_oauth.sql", "0004_oauth_hashed.sql", "0005_rate_limit.sql", "0006_settings.sql"];
+// Name + SQL, the shape a real deployment uses, so the ledger is exercised here
+// rather than only in production.
+const migrationFiles = MIGRATION_FILES.map((file) => ({
+  name: file,
+  sql: readFileSync(join(import.meta.dir, "..", "migrations", file), "utf8"),
+}));
+const migrations = migrationFiles;
 
 let store: Store;
 let app: ReturnType<typeof createApp>;
@@ -912,5 +917,35 @@ describe("tagging is the model's job", () => {
     expect(html).toContain("&lt;script&gt;alert(1)");
     // And it reaches both the title and the header link.
     expect(html.match(/&lt;script&gt;alert\(1\)/g)!.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+/**
+ * Migrations run at most once — the bug that only a SECOND boot could find.
+ *
+ * 0004 renames a column. Re-applying it fails with `no such column: "code"`,
+ * so a deployment whose /data survived a restart died on startup while every
+ * test and every fresh install stayed green. These tests open the SAME file
+ * twice, which is the thing the suite was never doing.
+ */
+describe("migrations are applied once", () => {
+  test("reopening the same database file does not re-run them", async () => {
+    const path = join(
+      process.env.TMPDIR ?? "/tmp",
+      `digger-migrate-${Date.now()}-${Math.random().toString(36).slice(2)}.db`,
+    );
+    const first = await openSqliteStore(path, migrationFiles);
+    await first.run(
+      "INSERT INTO nodes (title, body, type, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      ["kept", "b", "note", new Date().toISOString(), new Date().toISOString()],
+    );
+
+    // The second open is the whole test: before the ledger this threw.
+    const second = await openSqliteStore(path, migrationFiles);
+    const rows = await second.all<{ title: string }>("SELECT title FROM nodes", []);
+    expect(rows.map((r) => r.title)).toEqual(["kept"]);
+
+    const ledger = await second.all<{ name: string }>("SELECT name FROM schema_migrations", []);
+    expect(ledger.length).toBe(migrationFiles.length);
   });
 });

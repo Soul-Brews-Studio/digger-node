@@ -79,7 +79,7 @@ export function sqliteStore(database: SqliteLike): Store {
  */
 export async function openSqliteStore(
   path: string,
-  migrations: string[] = [],
+  migrations: Array<string | { name: string; sql: string }> = [],
 ): Promise<Store> {
   const { Database } = (await import("bun:sqlite")) as {
     Database: new (path: string) => SqliteLike & { exec(sql: string): void };
@@ -89,6 +89,50 @@ export async function openSqliteStore(
   // the schema are inert without this, and node_terms rows would outlive their
   // nodes. D1 enables them for you; a local file does not.
   database.exec("PRAGMA foreign_keys = ON");
-  for (const migration of migrations) database.exec(migration);
+
+  /**
+   * Each migration runs AT MOST ONCE, tracked in a table.
+   *
+   * The first version of this applied every file on every open, on the belief
+   * that migrations are idempotent. They are not, and the counter-example is
+   * already in this repository: 0004 is
+   *
+   *     ALTER TABLE oauth_codes RENAME COLUMN code TO code_hash;
+   *
+   * which succeeds once and then fails forever with `no such column: "code"`.
+   * A fresh database was fine, so tests passed and the first boot of a
+   * deployment passed; the SECOND boot — the first restart, the first update —
+   * died on startup. The Worker path never met this because
+   * `wrangler d1 migrations apply` has always kept a ledger. This is that
+   * ledger, and it is what makes "start it again" a safe recovery step rather
+   * than a claim.
+   *
+   * Applied inside a transaction with its bookkeeping, so a migration that
+   * fails partway cannot be recorded as done.
+   */
+  database.exec(
+    "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
+  );
+  const applied = new Set(
+    (database.query("SELECT name FROM schema_migrations").all() as { name: string }[]).map(
+      (row) => row.name,
+    ),
+  );
+
+  for (const entry of migrations) {
+    // A bare string keeps the old call shape working. Its identity is a hash of
+    // its own text, so the same SQL is recognised across runs and edited SQL is
+    // treated as a new migration rather than silently skipped.
+    const { name, sql } =
+      typeof entry === "string"
+        ? { name: `sha:${Bun.hash(entry).toString(16)}`, sql: entry }
+        : entry;
+    if (applied.has(name)) continue;
+    database.exec(sql);
+    database
+      .query("INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)")
+      .run(name, new Date().toISOString());
+  }
+
   return sqliteStore(database);
 }
